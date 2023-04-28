@@ -51,6 +51,7 @@ library(microbiome)
 library(RColorBrewer)
 library(gllvm)
 library(EnvStats)
+library(ggcorrplot)
 
 ```
 
@@ -106,7 +107,6 @@ frog_rare<-rarefy_even_depth(frog_filtered, sample.size = 6700)
 
 
 ```
-
 
 
 # Bar plots
@@ -262,11 +262,6 @@ data.com.phy <- plot.composition.relAbun$data
 data.com.phy$Tax<-factor(data.com.phy$Tax, levels = c( "Bacteroidetes","Proteobacteria", "Actinobacteria", "Firmicutes", "Other"))
 
 
-#pal1<-brewer.pal(12,"Paired")
-#pal1<-pal1[c(1,2,3,4,5)]
-#pal1[5]<-"white"
-
-#pal1<-c("lightskyblue", "palevioletred" , "#33A02C" , "bisque", "white")
 pal1<-c("lightskyblue", "plum3" , "#B2DF8A" , "#FFFF99", "white")
 
 
@@ -278,7 +273,6 @@ barplot_phylum<-ggplot(data.com.phy, aes(x = Sample, y = Abundance, fill = Tax))
    theme_bw(base_size = 14)+
   theme(axis.text.x = element_blank())+
   theme(axis.title.x = element_blank())+
-  #theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
   labs(fill = "Bacterial phylum")+
   ylab("Relative abundance")+
     theme(legend.key.size = unit(0.4, 'cm'))+
@@ -469,9 +463,9 @@ metadata$Seq_depth_transformed<-as.numeric(scale(sqrt(metadata$Seq_depth)))
 
 ## choose best distributions for 3 measures of alpha diversity
 
-EnvStats::distChoose(metadata$Observed)$decision
-EnvStats::distChoose(metadata$InvSimpson)$decision
-EnvStats::distChoose(metadata$Shannon)$decision
+#EnvStats::distChoose(metadata$Observed)$decision
+#EnvStats::distChoose(metadata$InvSimpson)$decision
+#EnvStats::distChoose(metadata$Shannon)$decision
 
 #### observed 
 
@@ -809,16 +803,7 @@ plot_wunifrac<-ggplot(vectors_wunifrac, aes(x = CAP1, y = CAP2))+
     arrow = arrow(length = unit(0.5, "cm"), type = "closed"), lwd = 1,  col = "black")+
   ggrepel::geom_label_repel(data=centroids_wunifrac[1:4,],  
     alpha = 0.9, col = "black", size = 4, fill = "yellow", 
-    #hjust = c(0,1), 
-    #vjust = c(1,1),
     aes(CAP1*2, CAP2*2, label = row.names(centroids_wunifrac[1:4,])))+
-  
-    # add species
- # geom_point(data = species_scores,  size = 6, col = "black", pch = 8, stroke = 0, alpha = 0)+
-#  geom_label_repel(data=species_scores,  
-#    alpha = 0.9, col = "black", size = 3.5, fill = "skyblue", 
-#    aes( label = row.names(species_scores)))+
-
 
   theme_light(base_size = 14)+
   ggtitle("a) Treatment: WU")
@@ -940,16 +925,7 @@ plot_bray<-ggplot(vectors_df, aes(x = CAP1, y = CAP2))+
     arrow = arrow(length = unit(0.5, "cm"), type = "closed"), lwd = 1,  col = "black")+
   ggrepel::geom_label_repel(data=centroids_df[1:4,],  
     alpha = 0.9, col = "black", size = 4, fill = "yellow", 
-
     aes(CAP1*2, CAP2*2, label = row.names(centroids_df[1:4,])))+
-  
-    # add species
- # geom_point(data = species_scores,  size = 6, col = "black", pch = 8, stroke = 0, alpha = 0)+
-#  geom_label_repel(data=species_scores,  
-#    alpha = 0.9, col = "black", size = 3.5, fill = "skyblue", 
-#    aes( label = row.names(species_scores)))+
-
-
   theme_light(base_size = 14)+
   ggtitle("b) Treatment: BC")
 
@@ -1072,6 +1048,8 @@ X$Mass_scaled<-as.numeric(scale(X$Mass))
 X$Seq_depth_scaled<-as.numeric(scale(sqrt(X$Seq_depth)))
 
 X<-X[,c("Treatment", "Mass_scaled", "Seq_depth_scaled", "Sex")]
+
+
 ```
 
 ### Model comparison
@@ -1093,7 +1071,6 @@ fit_3LV <- gllvm(y, X,
              num.lv = 3,
             formula = ~ Treatment+ Sex  + Seq_depth_scaled, 
              family = "negative.binomial")
-
 
 
 
@@ -1119,36 +1096,53 @@ dev.off()
 
 cr1<-getResidualCor(fit)
 
+cr2<-cor_pmat(cr1)
+
+ggcorrplot(cr1, hc.order = TRUE,
+   outline.col = "white",
+   type = "full",
+   ggtheme = ggplot2::theme_minimal,
+   tl.cex = 7.5,
+   p.mat = cr2,
+   sig.level = 0.01,
+  # show.diag = F,
+   insig = "blank",
+  # colors = c("#6D9EC1", "white", "#E46726"))
+   colors = c("blue", "white", "red"))
+
+
 corrplot::corrplot(cr1, type = "lower", order = "hclust", tl.cex = 0.7)
 
-dev.off()
 
 ```
 
 ### Extract estimates 
 ```{r}
 
-### extract estimates and CIs ###
-### extract estimates and CIs ###
-
 
 df<-coef(fit)
+
 est_df<-data.frame(df$Intercept)
 
-est_df2<-data.frame(df$Xcoef)[,1:3] # choose columns of interest
+est_df2<-data.frame(df$Xcoef) # choose columns of interest
 
 est_df3<-merge(est_df, est_df2, by = 0)
 
-est_df3$CU_est<- est_df3$TreatmentCU+est_df3$df.Intercept
-est_df3$UC_est<- est_df3$TreatmentUC+est_df3$df.Intercept
-est_df3$CC_est<- est_df3$TreatmentCC+est_df3$df.Intercept
-est_df3<-est_df3[,c(1,2,6:8)]
+head(est_df3)
+
+
 
 # order genera
 
 row.names(est_df3)<-est_df3$Row.names
-est_df3<-est_df3[taxa_names(frog_genus_core),]
+est_df3<-est_df3[colnames(y),]
 
+#put est_df3 into long format
+
+names(est_df3)[1]<- "Genus"
+names(est_df3)[2]<- "Intercept"
+
+estimates_df <- gather(est_df3, Treatment, Estimate, names(est_df3)[2]:names(est_df3)[ncol(est_df3)], factor_key=TRUE)
 
 ############# extract confindence intervals  ####
 ############# extract confindence intervals  ####
@@ -1158,149 +1152,89 @@ est_df3<-est_df3[taxa_names(frog_genus_core),]
 
 confint_df<-data.frame(confint(fit))
 
-confint_df$row<- 1:nrow(confint_df)
 
-confint_df<-confint_df[190:437,] # manually choose rows that represent estimates for variable of interest, including intercept
-confint_df$row<- 1:nrow(confint_df)
+confint_df<-rbind(confint_df[rownames(confint_df) %like% "Xcoef", ],
+confint_df[rownames(confint_df) %like% "Intercept", ])
 
+head(confint_df)
 
 # add a column with correct variable level
+variables<- colnames(est_df3)[3:ncol(est_df3)]
+variables<-c(variables, "Intercept")
+variables1<-rep(variables, nrow(est_df))
+variables2<-variables1[order(match(variables1, variables))]
 
 #confint_df$Treatment<-c(rep("UU", 40), rep("CU", 40), rep("UC", 40), rep("CC", 40))
-confint_df$Treatment<-c(rep("UU", nrow(est_df)), rep("CU", nrow(est_df)), rep("UC", nrow(est_df)), rep("CC", nrow(est_df)))
+confint_df$Treatment<-variables2
+
 
 # column with taxa names. Should be automatically in the correct order but double check
-confint_df$Genus<-c(taxa_names(frog_genus_core), taxa_names(frog_genus_core), taxa_names(frog_genus_core), taxa_names(frog_genus_core))
+
+confint_df$Genus<-rep(colnames(y), length(unique(confint_df$Treatment)))
 
 
 
-### extract standard errors #######
-### extract standard errors #######
-### extract standard errors #######
-### extract standard errors #######
+# now have estimates, confidence intervals, aas seperate data frames, but they are in different formats. Need to massage them into one dataframe for plotting.
 
-se_df<-se(fit)
-se1<-data.frame(se_df$sd$Xcoef)[,1:3] # select relevant columns
-se2<- data.frame(se_df$sd$beta0)
-se_df<-merge(se1, se2, by = 0)
-row.names(se_df)<-se_df$Row.names
-se_df<-se_df[taxa_names(frog_genus_core),]
-names(se_df)<-c("Genus", "CU", "UC", "CC", "UU")
+merged<-merge(estimates_df, confint_df, by = c("Treatment", "Genus"))
 
 
-# now have estimates, confidence intervals, and standard errors as seperate data frames, but they are in different formats. Need to massage them into one dataframe for plotting.
+final_estimates_reduced<- merged
+names(final_estimates_reduced)[4]<-"CI_lower"
+names(final_estimates_reduced)[5]<-"CI_upper"
+
+#final_estimates<- merged[,c(1,2,3,7,8)]
+head(final_estimates_reduced)
+unique(final_estimates_reduced$Treatment)
+
+final_estimates_reduced2<-subset(final_estimates_reduced, Treatment != "SexM" & Treatment != "Seq_depth_scaled")
+
+## add significance
+
+final_estimates_reduced2$Sig<- !data.table::between(0, final_estimates_reduced2$CI_lower, final_estimates_reduced2$CI_upper)
 
 
-### get estimates and confidence intervals for UU (reference group)
+final_estimates_reduced2$Genus<-factor(final_estimates_reduced2$Genus)
 
-UU_ci<-subset(confint_df, Treatment == "UU")
+levels(final_estimates_reduced2$Treatment)
 
-UU_df<- data.frame(est_df3$df.Intercept, UU_ci$X2.5.., UU_ci$X97.5.., UU_ci$Genus, se_df$UU)
-names(UU_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
-UU_df$Treatment <-"UU"
-
-# get estimates and CIs for CU. This needs to be modifed
-
-CU_ci<-subset(confint_df, Treatment == "CU")
-
-CU_df<- data.frame(est_df3$CU_est, est_df3$df.Intercept, CU_ci$X2.5.., CU_ci$X97.5.., CU_ci$Genus, se_df$CU)
-
-CU_df$CU_ci.X2.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X2.5..
-CU_df$CU_ci.X97.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X97.5..
-CU_df<-CU_df[,c(1,3:6)]
-
-names(CU_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
-CU_df$Treatment <-"CU"
-
-
-# get estimates and CIs for UC
-
-UC_ci<-subset(confint_df, Treatment == "UC")
-
-UC_df<- data.frame(est_df3$UC_est, est_df3$df.Intercept, UC_ci$X2.5.., UC_ci$X97.5.., UC_ci$Genus, se_df$UC)
-UC_df$UC_ci.X2.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X2.5..
-UC_df$UC_ci.X97.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X97.5..
-UC_df<-UC_df[,c(1,3:6)]
-names(UC_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
-UC_df$Treatment <-"UC"
-
-
-# get estimates and CIs for CC
-
-CC_ci<-subset(confint_df, Treatment == "CC")
-
-CC_df<- data.frame(est_df3$CC_est, est_df3$df.Intercept, CC_ci$X2.5.., CC_ci$X97.5.., CC_ci$Genus, se_df$CC)
-CC_df$CC_ci.X2.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X2.5..
-CC_df$CC_ci.X97.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X97.5..
-CC_df<-CC_df[,c(1,3:6)]
-names(CC_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
-CC_df$Treatment <-"CC"
-
-
-treatment_ci_df<-rbind(UU_df, CU_df, UC_df, CC_df)
-
-
-treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
-
-
-## get p values
-
-
-summary<-summary(fit)
-summary_df<-data.frame(summary$Coef.tableX)
-summary_df$nrow <- 1:nrow(summary_df)
-#View(summary_df)
-summary_df<-summary_df[1:186,] # keep only treatment stats
-
-treatment_ci_df$P_val<-NA
-treatment_ci_df$Significant<-NA
-
-dim(treatment_ci_df)
-
-treatment_ci_df$P_val[63:248]<- summary_df$Pr...z..
-
-treatment_ci_df$Significant<-ifelse(treatment_ci_df$P_val <0.05, "Significant", "Not significant")
-treatment_ci_df$Significant<-ifelse(is.na(treatment_ci_df$Significant), "Control", treatment_ci_df$Significant)
-
-treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
+final_estimates_reduced2$Treatment<-factor(final_estimates_reduced2$Treatment)
+levels(final_estimates_reduced2$Treatment)<-c("UU", "CU", "UC", "CC")
 
 
 
-# plot all genera
+ggplot(subset(final_estimates_reduced2, Treatment != "UU"), aes(y = reorder(Genus, Estimate), x = Estimate, col = Sig))+
+  geom_point()+
+  facet_wrap(~Treatment, nrow = 1, scales = "free_x")  + 
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper, col = Sig), height = 0, size = 0.5)+
+  geom_vline(xintercept = 0, linetype = "longdash")+
+  theme_bw()+
+  scale_color_manual(values = c("grey", "red"))+
+  theme(axis.title.y = element_blank())+
+  theme(axis.text.y = element_text(face="bold", size = 8))+
+  theme(legend.position = "none")+
+ theme(plot.margin=unit(c(0.2,0.2, 0.2, 0.6),"cm"))
 
-head(treatment_ci_df)
-
-treatment_ci_df<-treatment_ci_df[!is.na(treatment_ci_df$Est),]
-
-
-ggplot(treatment_ci_df, aes(y = Est, x = Treatment))+
- 
-  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
-  facet_wrap(~Genus, nrow = 10, scales = "free_y")+
-   geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
-  theme_bw(base_size = 12)+
-  scale_color_manual(values = c("black", "darkgrey", "red"))+
-   geom_point(size = 2, aes(col = Significant))+
-  theme(legend.position = "bottom")
+ggplot(subset(final_estimates_reduced2, Treatment != "UU"), aes(y = Estimate, x = Treatment, col = Sig))+
+  geom_point()+
+  facet_wrap(~Genus)  + 
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper, col = Sig), width = 0, size = 0.5)+
+  geom_hline(yintercept = 0, linetype = "longdash")+
+  theme_bw()+
+  scale_color_manual(values = c("grey", "red"))+
+  theme(axis.title.y = element_blank())+
+  theme(axis.text.y = element_text(face="bold", size = 8))+
+  theme(legend.position = "none")+
+ theme(plot.margin=unit(c(0.2,0.2, 0.2, 0.6),"cm"))
 
 
   
 ## plot only significant
 
-estimates_sig<- subset(treatment_ci_df,  Genus == "Comamonas" |  Genus == "Empedobacter" |  Genus == "Enterobacter" |  Genus == "Enterococcus" |   Genus == "Flavobacterium" |   Genus == "Kluyvera" |  Genus == "Lactococcus" | Genus == "Methylobacterium" | Genus == "Paenarthrobacter" |  Genus == "Pragia" |Genus == "Sphingobacterium" |  Genus == "Thermomonas")
+estimates_sig<- subset(final_estimates_reduced2,  Genus == "Comamonas" |  Genus == "Empedobacter" |  Genus == "Enterobacter" |  Genus == "Enterococcus" |   Genus == "Flavobacterium" |   Genus == "Kluyvera" |  Genus == "Lactococcus" | Genus == "Methylobacterium" | Genus == "Paenarthrobacter" |  Genus == "Pragia" |Genus == "Sphingobacterium" |  Genus == "Thermomonas")
 
 estimates_sig<-estimates_sig%>%arrange(Treatment, Genus)
 
-ggplot(estimates_sig, 
-       aes(y = Est, x = Treatment))+
-   geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
-  facet_wrap(~Genus, nrow = 2, scales = "free_y")+
-   geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
-  theme_bw(base_size = 12)+
-  scale_color_manual(values = c("black", "darkgrey", "red"))+
-   geom_point(size = 4, aes(col = Significant))+
-  theme(legend.position = "bottom")+
-  ylab("Estimate")
 
 estimates_sig$Genus<-factor(estimates_sig$Genus)
 
@@ -1320,16 +1254,19 @@ estimates_sig$Effect_type <- rep(c("Additive",
 
 estimates_sig$Effect_type <-factor(estimates_sig$Effect_type , levels = c("Additive", "Dominant", "Adult/Dominant", "Developmental/Dominant", "Other"))
 
-ggplot(estimates_sig, 
-       aes(y = Est, x = Treatment))+
-   geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
-  facet_wrap(~Effect_type+Genus, nrow = 2, scales = "free_y")+
-   geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
-  theme_bw(base_size = 12)+
-  scale_color_manual(values = c("black", "darkgrey", "red"))+
-   geom_point(size = 4, aes(col = Significant))+
-  theme(legend.position = "bottom")+
-  ylab("Estimate")
+ggplot(subset(estimates_sig, Treatment != "UU"), aes(y = Estimate, x = Treatment, col = Sig))+
+  geom_point()+
+  facet_wrap(~Effect_type+Genus, scales = "free_y")  + 
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper, col = Sig), width = 0, size = 0.5)+
+  geom_hline(yintercept = 0, linetype = "longdash")+
+  theme_bw()+
+  scale_color_manual(values = c("grey", "red"))+
+  theme(axis.title.y = element_blank())+
+  theme(axis.text.y = element_text(face="bold", size = 8))+
+  theme(legend.position = "none")+
+ theme(plot.margin=unit(c(0.2,0.2, 0.2, 0.6),"cm"))
+
+
 
 
 
@@ -1417,24 +1354,30 @@ dev.off()
 ### extract estimates and CIs ###
 ### extract estimates and CIs ###
 
+
 df<-coef(fit)
+
 est_df<-data.frame(df$Intercept)
 
-est_df2<-data.frame(df$Xcoef)[,1:3] # choose columns of interest
-
+est_df2<-data.frame(df$Xcoef) # choose columns of interest
 
 est_df3<-merge(est_df, est_df2, by = 0)
 
-est_df3$CU_est<- est_df3$TreatmentCU+est_df3$df.Intercept
-est_df3$UC_est<- est_df3$TreatmentUC+est_df3$df.Intercept
-est_df3$CC_est<- est_df3$TreatmentCC+est_df3$df.Intercept
-est_df3<-est_df3[,c(1,2,6:8)] # change for zour data
+head(est_df3)
+
+
 
 # order genera
 
 row.names(est_df3)<-est_df3$Row.names
-est_df3<-est_df3[gsub(' ', '.', taxa_names(frog_core)),] # order taxa
+est_df3<-est_df3[colnames(y),]
 
+#put est_df3 into long format
+
+names(est_df3)[1]<- "Genus"
+names(est_df3)[2]<- "Intercept"
+
+estimates_df <- gather(est_df3, Treatment, Estimate, names(est_df3)[2]:names(est_df3)[ncol(est_df3)], factor_key=TRUE)
 
 ############# extract confindence intervals  ####
 ############# extract confindence intervals  ####
@@ -1444,138 +1387,101 @@ est_df3<-est_df3[gsub(' ', '.', taxa_names(frog_core)),] # order taxa
 
 confint_df<-data.frame(confint(fit))
 
-confint_df$row<- 1:nrow(confint_df)
 
-confint_df<-confint_df[205:472,] # manually choose rows that represent estimates for variable of interest
-confint_df$row<- 1:nrow(confint_df)
+confint_df<-rbind(confint_df[rownames(confint_df) %like% "Xcoef", ],
+confint_df[rownames(confint_df) %like% "Intercept", ])
 
+head(confint_df)
 
 # add a column with correct variable level
+variables<- colnames(est_df3)[3:ncol(est_df3)]
+variables<-c(variables, "Intercept")
+variables1<-rep(variables, nrow(est_df))
+variables2<-variables1[order(match(variables1, variables))]
 
+#confint_df$Treatment<-c(rep("UU", 40), rep("CU", 40), rep("UC", 40), rep("CC", 40))
+confint_df$Treatment<-variables2
 
-confint_df$Treatment<-c(rep("UU", nrow(est_df)), rep("CU", nrow(est_df)), rep("UC", nrow(est_df)), rep("CC", nrow(est_df)))
 
 # column with taxa names. Should be automatically in the correct order but double check
 
-confint_df$ASV<-c(taxa_names(frog_core), taxa_names(frog_core), taxa_names(frog_core), taxa_names(frog_core))
+confint_df$Genus<-rep(colnames(y), length(unique(confint_df$Treatment)))
 
 
-### extract standard errors #######
-### extract standard errors #######
-### extract standard errors #######
-### extract standard errors #######
 
-se_df<-se(fit)
-se1<-data.frame(se_df$sd$Xcoef)[,1:3] # select relevant columns
-se2<- data.frame(se_df$sd$beta0)
-se_df<-merge(se1, se2, by = 0)
-row.names(se_df)<-se_df$Row.names
-se_df<-se_df[gsub(' ', '.', taxa_names(frog_core)),]
-names(se_df)<-c("ASV", "CU", "UC", "CC", "UU")
+# now have estimates, confidence intervals, aas seperate data frames, but they are in different formats. Need to massage them into one dataframe for plotting.
+
+merged<-merge(estimates_df, confint_df, by = c("Treatment", "Genus"))
 
 
-# now have estimates, confidence intervals, and standard errors as seperate data frames, but they are in different formats. Need to massage them into one dataframe for plotting.
+final_estimates_reduced<- merged
+names(final_estimates_reduced)[4]<-"CI_lower"
+names(final_estimates_reduced)[5]<-"CI_upper"
+
+#final_estimates<- merged[,c(1,2,3,7,8)]
+head(final_estimates_reduced)
+unique(final_estimates_reduced$Treatment)
+
+final_estimates_reduced2<-subset(final_estimates_reduced, Treatment != "SexM" & Treatment != "Seq_depth_scaled")
+
+## add significance
+
+final_estimates_reduced2$Sig<- !data.table::between(0, final_estimates_reduced2$CI_lower, final_estimates_reduced2$CI_upper)
 
 
-### get estimates and confidence intervals for UU (reference group)
+final_estimates_reduced2$Genus<-factor(final_estimates_reduced2$Genus)
 
-UU_ci<-subset(confint_df, Treatment == "UU")
+levels(final_estimates_reduced2$Treatment)
 
-UU_df<- data.frame(est_df3$df.Intercept, UU_ci$X2.5.., UU_ci$X97.5.., UU_ci$ASV, se_df$UU)
-names(UU_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
-UU_df$Treatment <-"UU"
-
-# get estimates and CIs for CU. This needs extra lines to manually modify the CIs
-
-CU_ci<-subset(confint_df, Treatment == "CU")
-
-CU_df<- data.frame(est_df3$CU_est, est_df3$df.Intercept, CU_ci$X2.5.., CU_ci$X97.5.., CU_ci$ASV, se_df$CU)
-
-CU_df$CU_ci.X2.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X2.5..
-CU_df$CU_ci.X97.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X97.5..
-CU_df<-CU_df[,c(1,3:6)]
-
-names(CU_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
-CU_df$Treatment <-"CU"
+final_estimates_reduced2$Treatment<-factor(final_estimates_reduced2$Treatment)
+levels(final_estimates_reduced2$Treatment)<-c("UU", "CU", "UC", "CC")
 
 
-# get estimates and CIs for UC
 
-UC_ci<-subset(confint_df, Treatment == "UC")
+ggplot(subset(final_estimates_reduced2, Treatment != "UU"), aes(y = reorder(Genus, Estimate), x = Estimate, col = Sig))+
+  geom_point()+
+  facet_wrap(~Treatment, nrow = 1, scales = "free_x")  + 
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper, col = Sig), height = 0, size = 0.5)+
+  geom_vline(xintercept = 0, linetype = "longdash")+
+  theme_bw()+
+  scale_color_manual(values = c("grey", "red"))+
+  theme(axis.title.y = element_blank())+
+  theme(axis.text.y = element_text(face="bold", size = 8))+
+  theme(legend.position = "none")+
+ theme(plot.margin=unit(c(0.2,0.2, 0.2, 0.6),"cm"))
 
-UC_df<- data.frame(est_df3$UC_est, est_df3$df.Intercept, UC_ci$X2.5.., UC_ci$X97.5.., UC_ci$ASV, se_df$UC)
-UC_df$UC_ci.X2.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X2.5..
-UC_df$UC_ci.X97.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X97.5..
-UC_df<-UC_df[,c(1,3:6)]
-names(UC_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
-UC_df$Treatment <-"UC"
-
-
-# get estimates and CIs for CC
-
-CC_ci<-subset(confint_df, Treatment == "CC")
-
-CC_df<- data.frame(est_df3$CC_est, est_df3$df.Intercept, CC_ci$X2.5.., CC_ci$X97.5.., CC_ci$ASV, se_df$CC)
-CC_df$CC_ci.X2.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X2.5..
-CC_df$CC_ci.X97.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X97.5..
-CC_df<-CC_df[,c(1,3:6)]
-names(CC_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
-CC_df$Treatment <-"CC"
-
-
-treatment_ci_df<-rbind(UU_df, CU_df, UC_df, CC_df)
-treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
-
-## get p values
-
-summary<-summary(fit)
-summary_df<-data.frame(summary$Coef.tableX)
-summary_df$row<-1:nrow(summary_df)
-
-summary_df<-summary_df[1:201,] # keep only treatment stats
-
-treatment_ci_df$P_val<-NA
-treatment_ci_df$Significant<-NA
-
-treatment_ci_df$P_val[68:268]<- summary_df$Pr...z..
-
-treatment_ci_df$Significant<-ifelse(treatment_ci_df$P_val <0.05, "Significant", "Not significant")
-treatment_ci_df$Significant<-ifelse(is.na(treatment_ci_df$Significant), "Control", treatment_ci_df$Significant)
-
-treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
+ggplot(subset(final_estimates_reduced2, Treatment != "UU"), aes(y = Estimate, x = Treatment, col = Sig))+
+  geom_point()+
+  facet_wrap(~Genus)  + 
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper, col = Sig), width = 0, size = 0.5)+
+  geom_hline(yintercept = 0, linetype = "longdash")+
+  theme_bw()+
+  scale_color_manual(values = c("grey", "red"))+
+  theme(axis.title.y = element_blank())+
+  theme(axis.text.y = element_text(face="bold", size = 8))+
+  theme(legend.position = "none")+
+ theme(plot.margin=unit(c(0.2,0.2, 0.2, 0.6),"cm"))
 
 
-# plot all genera
-ggplot(treatment_ci_df, aes(y = Est, x = Treatment))+
-  
-  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
-  facet_wrap(~ASV, scales = "free_y")+
-  geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
-  theme_bw(base_size = 12)+
-  scale_color_manual(values = c("black", "darkgrey", "red"))+
-  geom_point(size = 2, aes(col = Significant))+
-  theme(legend.position = "bottom")
+# only significant ASVs
 
-############
-############
-############
-
-sig_asvs<-unique((subset(treatment_ci_df, Significant == "Significant"))$ASV)
-
-
-treatment_ci_df$Keep<-treatment_ci_df$ASV %in% sig_asvs
+sig_asvs<-unique((subset(final_estimates_reduced2, Sig == "Significant"))$ASV)
+final_estimates_reduced2$Keep<-final_estimates_reduced2$Genus %in% sig_asvs
 
 estimates_sig<-subset(treatment_ci_df, Keep == TRUE)
 
-ggplot(estimates_sig, aes(y = Est, x = Treatment))+
-  
-  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
-  facet_wrap(~ASV, scales = "free_y", ncol =4)+
-  geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
-  theme_bw(base_size = 12)+
-  scale_color_manual(values = c("black", "darkgrey", "red"))+
-  geom_point(size = 3, aes(col = Significant))+
-  theme(legend.position = "bottom")
+ggplot(subset(estimates_sig, Treatment != "UU" ), aes(y = Estimate, x = Treatment, col = Sig))+
+  geom_point()+
+  facet_wrap(~Genus)  + 
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper, col = Sig), width = 0, size = 0.5)+
+  geom_hline(yintercept = 0, linetype = "longdash")+
+  theme_bw()+
+  scale_color_manual(values = c("grey", "red"))+
+  theme(axis.title.y = element_blank())+
+  theme(axis.text.y = element_text(face="bold", size = 8))+
+  theme(legend.position = "none")+
+ theme(plot.margin=unit(c(0.2,0.2, 0.2, 0.6),"cm"))
+
 
 ```
 
