@@ -1,0 +1,2042 @@
+---
+title: 'Rmarkdown: Dietary carotenoid supplementation has long-term and community-wide
+  effects on the amphibian skin microbiome'
+author: "Alice Risely"
+date: "29//03/23"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    toc_float:
+      collapsed: no
+    theme: journal
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height = 5, fig.width =10, time_it = TRUE, error = TRUE)
+```
+
+# Load packages
+
+```{r packages}
+
+library(phyloseq)
+library(ggplot2)
+library(vegan)
+library(dplyr)
+library(scales)
+library(grid)
+library(reshape2)
+library(ape)
+library(gridExtra)
+library(ade4)
+library(plyr)
+library(tidyr)
+library(data.table)
+library(stringr)
+library(ggrepel)
+library(r2glmm)
+library(ggvenn)
+library(viridis)
+library(ggord)
+
+
+library(GGally)
+library(sjPlot)
+library(performance)
+
+library(ggpubr)
+library(microbiome)
+library(RColorBrewer)
+library(gllvm)
+library(EnvStats)
+
+```
+
+#### Prevalence function
+```{r include = F}
+
+prevalence <- function(physeq, add_tax = TRUE){
+  
+  ## Check if taxa are rows
+  trows <- taxa_are_rows(physeq)
+  
+  ## Extract OTU table
+  otutab <- as.data.frame(otu_table(physeq))
+  
+  ## Transpose OTU table (species should be arranged by rows)
+  if(trows == FALSE){
+    otutab <- t(otutab)
+  }
+  
+  ## Estimate prevalence (number of samples with OTU present)
+  prevdf <- apply(X = otutab,
+                  #MARGIN = ifelse(trows, yes = 1, no = 2),  # for a non-transposed data
+                  MARGIN = 1,
+                  FUN = function(x){sum(x > 0)})
+  
+  ## Add total and average read counts per OTU
+  prevdf <- data.frame(Prevalence = prevdf,
+                       TotalAbundance = taxa_sums(physeq),
+                       MeanAbundance = rowMeans(otutab),
+                       MedianAbundance = apply(otutab, 1, median))
+  
+  ## Add taxonomy table
+  if(add_tax == TRUE && !is.null(tax_table(physeq, errorIfNULL = F))){
+    prevdf <- cbind(prevdf, tax_table(physeq))
+  }
+  return(prevdf)
+}
+```
+
+# Load data
+
+```{r}
+
+setwd("C:/Users/risel/Dropbox/Academic projects/Frog microbiome UOW/Frogs_UOW/Diet treatment project/Analysis in R")
+
+frog_biom <-phyloseq::import_biom("frog.biom")
+frog_map <-phyloseq::import_qiime_sample_data ('frog_metadata.txt')
+tree<-phyloseq::read_tree("frog.tree")
+frog_ps <-phyloseq::merge_phyloseq(frog_biom, frog_map, tree)
+frog_ps
+
+
+## fix metadata
+
+sample_data(frog_ps)$Mass<-as.numeric(gsub(',','.',sample_data(frog_ps)$Mass))
+
+frogs_sex <- read.csv("Data and code/frogs_sex.csv")
+
+frogs_sex<-frogs_sex[,1:5]
+
+names(frogs_sex)[1]<-"frog_id"
+frogs_sex<-frogs_sex[,c(1,5)]
+
+sample_data(frog_ps)$Sex<-expss::vlookup(sample_data(frog_ps)$frog_id, frogs_sex, lookup_column = "frog_id", result_column = "Sex")
+
+sample_data(frog_ps)$Sex<-factor(sample_data(frog_ps)$Sex, levels = c("F", "M"))
+sample_data(frog_ps)$date_cat<-ifelse(sample_data(frog_ps)$date=="10.04.2018", "Date1", "Date2")
+
+sample_data(frog_ps)$date <-as.Date( sample_data(frog_ps)$date, "%d.%m.%Y")
+
+write.csv(data.frame(sample_data(frog_ps)), "frog_metadata_clean.csv")
+
+```
+
+# Filter taxa
+
+```{r}
+
+
+colnames(tax_table(frog_ps)) <- c("Kingdom", "Phylum", "Class", 
+                                     "Order", "Family", "Genus", "Species")
+
+###get rid of the D_1 etc characters infront of tax names
+
+taxonomy<-data.frame(tax_table(frog_ps))
+
+
+taxonomy$Kingdom<-substr(taxonomy$Kingdom, 6, 60)
+taxonomy$Phylum<-substr(taxonomy$Phylum, 6, 60)
+taxonomy$Class<-substr(taxonomy$Class, 6, 60)
+taxonomy$Order<-substr(taxonomy$Order, 6, 60)
+taxonomy$Family<-substr(taxonomy$Family, 6, 60)
+taxonomy$Genus<-substr(taxonomy$Genus, 6, 60)
+taxonomy$Species<-substr(taxonomy$Species, 6, 60)
+
+
+
+taxonomy1<-tax_table(as.matrix(taxonomy))
+tax_table(frog_ps)<-taxonomy1
+
+
+##filter taxa that are not bacteria or not assigned at phylum level
+
+frog_filtered <- frog_ps %>%
+  subset_taxa(
+    Kingdom == "Bacteria")
+frog_filtered
+
+frog_filtered <- frog_filtered %>%
+  subset_taxa(
+    Phylum != "NA")
+frog_filtered
+
+frog_filtered <- frog_filtered %>%
+  subset_taxa(
+    Family != "Mitochondria")
+frog_filtered
+
+
+frog_filtered <- frog_filtered %>%
+  subset_taxa(
+    Class != "Chloroplast")
+
+frog_filtered
+frog_ps
+
+
+########## filter samples ############
+
+frog_filtered<-prune_taxa(taxa_sums(frog_filtered)>0, frog_filtered)
+
+1-(sum(sample_sums(frog_filtered))/sum(sample_sums(frog_ps)))
+
+
+# add sequencing depth to metadata
+
+sample_data(frog_filtered)$Seq_depth <-sample_sums(frog_filtered)
+summary(sample_data(frog_filtered)$Seq_depth)
+
+```
+
+# Replicates
+
+```{r}
+
+## replicates
+
+replicate_ps<-subset_samples(frog_filtered, Run == "BYLN3" | Run == "BYLLT")
+length(unique(sample_data(replicate_ps)$frog_id))
+
+
+summary(sample_sums(replicate_ps))
+replicate_rare<- rarefy_even_depth(replicate_ps, sample.size = 18000)
+
+sample_data(replicate_rare)$Seq_run <-ifelse(sample_data(replicate_rare)$Run == "BYLLT", "Run 1", "Run 2")
+set.seed(1)
+
+## bray curtis
+
+
+rep_bray <- ordinate(
+  physeq = replicate_rare, 
+  method = "NMDS", 
+  distance = "bray"
+)
+
+ord_df<-data.frame(rep_bray$points)
+rep_metadata<-data.frame(sample_data(replicate_rare))
+head(rep_metadata)
+rep_bray_df<-merge(rep_metadata, ord_df, by = 0)
+
+rep1<-ggplot(rep_bray_df, aes(x = MDS1, y = MDS2, fill = Seq_run, group = frog_id))+
+  geom_point(pch = 21, size = 5)+
+  geom_line()+
+  theme_bw(base_size = 12)+
+  ggtitle("Replicates - Bray-Curtis")+
+  scale_fill_manual(values = c("skyblue", "red"))
+
+## weighted unifrac
+
+rep_wunifrac <- ordinate(
+  physeq = replicate_rare, 
+  method = "NMDS", 
+  distance = "wunifrac"
+)
+
+ord_df<-data.frame(rep_wunifrac$points)
+rep_metadata<-data.frame(sample_data(replicate_rare))
+head(rep_metadata)
+rep_wunifrac_df<-merge(rep_metadata, ord_df, by = 0)
+
+rep2<-ggplot(rep_wunifrac_df, aes(x = MDS1, y = MDS2, fill = Seq_run, group = frog_id))+
+  geom_point(pch = 21, size = 5)+
+  geom_line()+
+  theme_bw(base_size = 12)+
+  ggtitle("Replicates - weighted Unifrac")+
+  scale_fill_manual(values = c("skyblue", "red"))
+
+ggarrange(rep2, rep1, ncol = 2, common.legend = T)
+
+
+
+```
+
+```{r}
+
+## exclude Run BYLN3 as these are replicates of run BYLLT and have fewer reads per sample
+
+
+frog_filtered <- frog_filtered %>%
+  subset_samples(
+    Run!= "BYLN3")
+
+```
+
+# Change ASV names
+
+* change names to something informative
+
+```{r include = F}
+
+taxtable<-data.frame(tax_table(frog_filtered))
+taxtable$Taxa<-row.names(taxtable)
+
+
+taxtable$Genus<-ifelse(is.na(taxtable$Genus), taxtable$Family, taxtable$Genus)
+taxtable$Genus<-ifelse(taxtable$Genus == "uncultured", taxtable$Family,taxtable$Genus)
+
+taxtable$ASV<-as.integer(as.factor(taxtable$Taxa))
+taxtable$New_Taxa<-paste(taxtable$Genus, "ASV", taxtable$ASV)
+
+taxa_names(frog_filtered)<-taxtable$New_Taxa
+
+# also reorder
+
+sample_data(frog_filtered)$Treatment<- factor(sample_data(frog_filtered)$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+frog_filtered
+sum(sample_sums(frog_filtered))
+summary(sample_sums(frog_filtered))
+
+taxtable_blast<-taxtable
+
+```
+
+# Data exploration
+
+```{r include = F}
+
+metadata<-data.frame(sample_data(frog_filtered))
+
+metadata %>% 
+  select("Treatment", "Mass", "Sex", "Seq_depth", "date") %>%
+  ggpairs()
+
+
+# Two points where sex is missing must be male based on weight distributions
+
+sample_data(frog_filtered)$Sex<-ifelse(is.na(sample_data(frog_filtered)$Sex) & sample_data(frog_filtered)$Mass < 2.5, "M", as.character(sample_data(frog_filtered)$Sex))
+
+sample_data(frog_filtered)$Sex<-ifelse(is.na(sample_data(frog_filtered)$Sex), "U", as.character(sample_data(frog_filtered)$Sex))
+
+frog_filtered<- subset_samples(frog_filtered, !Sex == "U")
+
+
+```
+
+# Create transformed datasets
+
+```{r}
+
+frog_rare<-rarefy_even_depth(frog_filtered, sample.size = 6700)
+
+
+```
+
+# Top taxa summary
+```{r}
+
+frog_comp<-microbiome::transform(frog_filtered, "compositional")
+
+# phylum level 
+top_taxa_phylum<-aggregate_top_taxa(frog_comp, top = 10, level = "Phylum")
+prev_df_phylum<-prevalence(top_taxa_phylum)%>% head()
+prev_df_phylum %>% arrange(-MeanAbundance)%>% head()
+
+# order level
+top_taxa_order<-aggregate_top_taxa(frog_comp, top = 10, level = "Order")
+prev_df_order<-prevalence(top_taxa_order)%>% head()
+prev_df_order %>% arrange(-MeanAbundance)%>% head()
+
+# family level
+top_taxa_family<-aggregate_top_taxa(frog_comp, top = 10, level = "Family")
+prev_df_family<-prevalence(top_taxa_family)%>% head()
+prev_df_family %>% arrange(-MeanAbundance)%>% head()
+
+
+# genus level
+top_taxa_genus<-aggregate_top_taxa(frog_filtered, top = 20, level = "Genus")
+prev_df_genus<-prevalence(top_taxa_genus)
+prev_df_genus$Prev<- prev_df_genus$Prevalence/104
+prev_df_genus$RelAbund<- (prev_df_genus$TotalAbundance/sum(taxa_sums(frog_filtered)))
+prev_df_genus %>% arrange(-RelAbund)%>% head()
+prev_df_genus %>% arrange(-Prevalence) %>% head()
+
+```
+
+
+# Bar plots
+
+```{r}
+frog_phylum<- tax_glom(frog_filtered, taxrank = "Phylum")
+frog_phylum<- aggregate_top_taxa(frog_filtered, top = 10, level = "Phylum")
+frog_phylum<- microbiome::transform(frog_phylum, "compositional")
+
+
+### order
+
+frog_order<- tax_glom(frog_filtered, taxrank = "Order")
+
+frog_order<- microbiome::transform(frog_order, "compositional")
+frog_order<-microbiome::core(frog_order, detection = 0, prevalence = 0.9)
+
+
+##############################
+
+
+ps1.com.fam <- microbiome::aggregate_top_taxa(frog_filtered, "Order", top = 22)
+
+ps1.com.fam<- microbiome::transform(ps1.com.fam, "compositional")
+
+plot.composition.relAbun <- microbiome::plot_composition(ps1.com.fam,
+                                             sample.sort = "Treatment",
+                                             x.label = "frog_id",
+                                             group_by = "Treatment") 
+
+
+data.com <- plot.composition.relAbun$data
+colnames(data.com)
+
+
+data.com$Tax<-ifelse(data.com$Tax == "Fimbriimonadales" | data.com$Tax == "Propionibacteriales" |data.com$Tax == "Verrucomicrobiales", "Other", as.character(data.com$Tax))
+
+
+unique(data.com$Tax)
+data.com$Tax<-factor(data.com$Tax, level = c("Flavobacteriales",
+                                                     "Bacteroidales",
+                                                     "Sphingobacteriales",
+                                                     "Chitinophagales",
+                                                     "Cytophagales",
+                                                     
+                                                     "Enterobacteriales",
+                                                     "Pseudomonadales",
+                                                     "Aeromonadales",
+                                                     "Xanthomonadales",
+                                                     "Betaproteobacteriales",
+                                                     "Rhizobiales",
+                                                    # "Cardiobacteriales",
+                                                     "Azospirillales",
+                                                     "Sphingomonadales",
+                                                     #"Desulfovibrionales",
+                                                     
+                                                     "Corynebacteriales",
+                                                    # "Pseudonocardiales",
+                                                     "Micrococcales",
+                                                     
+                                                     "Clostridiales",
+                                                     "Bacillales",
+                                                     "Lactobacillales",
+                                                     
+                                                     "Fusobacteriales",
+                                                     "Other"))
+
+
+colors <- c("lightskyblue","skyblue4", "royalblue","darkslategray4", "cyan",
+
+            "#E7E1EF", "#D4B9DA", "#C994C7", "#DF65B0" ,"#E7298A" ,"#CE1256", "#980043", "#67001F",
+            
+            "forestgreen","olivedrab2",
+            
+            "yellow","chocolate","bisque",
+            
+            "navy",
+            
+            "white")
+
+barplot_order<-ggplot(data.com, aes(x = Sample, y = Abundance, fill = Tax))+
+  geom_bar(position = "stack", stat = "identity", width = 1, col = "black")+
+  scale_x_discrete(labels = data.com$xlabel, breaks = data.com$Sample)+
+  facet_grid(~Group, scales = "free") + theme_bw()+
+  scale_fill_manual(values = colors)+
+   theme_bw(base_size = 14)+
+  theme(axis.text.x = element_blank())+
+  labs(fill = "Bacterial Order")+
+  ylab("Relative abundance")+
+    theme(legend.key.size = unit(0.4, 'cm'))+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) 
+
+#########################
+#########################
+#########################
+#########################
+#########################
+
+plot.composition.relAbun <- microbiome::plot_composition(ps1.com.fam,
+                                             sample.sort = "Sex",
+                                             x.label = "frog_id",
+                                             group_by = "Sex") 
+
+
+data.com <- plot.composition.relAbun$data
+colnames(data.com)
+
+
+data.com$Tax<-ifelse(data.com$Tax == "Fimbriimonadales" | data.com$Tax == "Propionibacteriales" |data.com$Tax == "Verrucomicrobiales", "Other", as.character(data.com$Tax))
+
+
+unique(data.com$Tax)
+data.com$Tax<-factor(data.com$Tax, level = c("Flavobacteriales",
+                                                     "Bacteroidales",
+                                                     "Sphingobacteriales",
+                                                     "Chitinophagales",
+                                                     "Cytophagales",
+                                                     
+                                                     "Enterobacteriales",
+                                                     "Pseudomonadales",
+                                                     "Aeromonadales",
+                                                     "Xanthomonadales",
+                                                     "Betaproteobacteriales",
+                                                     "Rhizobiales",
+                                                    # "Cardiobacteriales",
+                                                     "Azospirillales",
+                                                     "Sphingomonadales",
+                                                     #"Desulfovibrionales",
+                                                     
+                                                     "Corynebacteriales",
+                                                    # "Pseudonocardiales",
+                                                     "Micrococcales",
+                                                     
+                                                     "Clostridiales",
+                                                     "Bacillales",
+                                                     "Lactobacillales",
+                                                     
+                                                     "Fusobacteriales",
+                                                     "Other"))
+
+
+
+# phylum level
+
+
+ps1.com.phy <- microbiome::aggregate_top_taxa(frog_filtered, "Phylum", top = 4)
+
+ps1.com.phy<- microbiome::transform(ps1.com.phy, "compositional")
+
+plot.composition.relAbun <- microbiome::plot_composition(ps1.com.phy,
+                                             sample.sort = "Treatment",
+                                             x.label = "frog_id",
+                                             group_by = "Treatment") 
+
+
+data.com.phy <- plot.composition.relAbun$data
+
+
+data.com.phy$Tax<-factor(data.com.phy$Tax, levels = c( "Bacteroidetes","Proteobacteria", "Actinobacteria", "Firmicutes", "Other"))
+
+
+pal1<-brewer.pal(12,"Paired")
+#show_col(pal1)
+pal1<-pal1[c(1,2,3,4,5)]
+pal1[5]<-"white"
+
+pal1<-c("lightskyblue", "palevioletred" , "#33A02C" , "bisque", "white")
+pal1<-c("lightskyblue", "plum3" , "#B2DF8A" , "#FFFF99", "white")
+
+
+barplot_phylum<-ggplot(data.com.phy, aes(x = Sample, y = Abundance, fill = Tax))+
+  geom_bar(position = "stack", stat = "identity", width = 1, col = "black")+
+  scale_x_discrete(labels = data.com$xlabel, breaks = data.com$Sample)+
+  facet_grid(~Group, scales = "free") + theme_bw()+
+  scale_fill_manual(values = pal1)+
+   theme_bw(base_size = 14)+
+  theme(axis.text.x = element_blank())+
+  theme(axis.title.x = element_blank())+
+  #theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  labs(fill = "Bacterial Phylum")+
+  ylab("Relative abundance")+
+    theme(legend.key.size = unit(0.4, 'cm'))+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 1)) 
+
+
+ggarrange(barplot_phylum, barplot_order, ncol = 1, align = "v", heights = c(1,1.2) , labels = c("a)", "b)"))
+
+#ggsave("Figures/fig2.pdf")
+
+#Saving 13.6 x 7.68 in image
+
+```
+
+# Venn diagram
+
+```{r}
+
+
+frog_uu<-subset_samples(frog_filtered, Treatment == "UU")
+frog_uu<-prune_taxa(taxa_sums(frog_uu)>0, frog_uu)
+
+frog_cc<-subset_samples(frog_filtered, Treatment == "CC")
+frog_cc<-prune_taxa(taxa_sums(frog_cc)>0, frog_cc)
+
+frog_cu<-subset_samples(frog_filtered, Treatment == "CU")
+frog_cu<-prune_taxa(taxa_sums(frog_cu)>0, frog_cu)
+
+frog_uc<-subset_samples(frog_filtered, Treatment == "UC")
+frog_uc<-prune_taxa(taxa_sums(frog_uc)>0, frog_uc)
+
+uu_asvs<-taxa_names(frog_uu)
+cc_asvs<-taxa_names(frog_cc)
+uc_asvs<-taxa_names(frog_uc)
+cu_asvs<-taxa_names(frog_cu)
+
+x <- list(
+  UU = uu_asvs, 
+  CU = cu_asvs, 
+  UC = uc_asvs,
+  CC = cc_asvs
+  )
+
+
+p1<- ggvenn(
+  x, 
+  fill_color = c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4)
+
+
+###
+
+frog_filtered5pc<-core(frog_filtered, detection = 0, prevalence = 0.03)
+
+frog_uu<-subset_samples(frog_filtered5pc, Treatment == "UU")
+frog_uu<-prune_taxa(taxa_sums(frog_uu)>0, frog_uu)
+
+frog_cc<-subset_samples(frog_filtered5pc, Treatment == "CC")
+frog_cc<-prune_taxa(taxa_sums(frog_cc)>0, frog_cc)
+
+frog_cu<-subset_samples(frog_filtered5pc, Treatment == "CU")
+frog_cu<-prune_taxa(taxa_sums(frog_cu)>0, frog_cu)
+
+frog_uc<-subset_samples(frog_filtered5pc, Treatment == "UC")
+frog_uc<-prune_taxa(taxa_sums(frog_uc)>0, frog_uc)
+
+uu_asvs<-taxa_names(frog_uu)
+cc_asvs<-taxa_names(frog_cc)
+uc_asvs<-taxa_names(frog_uc)
+cu_asvs<-taxa_names(frog_cu)
+
+y <- list(
+  UU = uu_asvs, 
+  CU = cu_asvs, 
+  UC = uc_asvs,
+  CC = cc_asvs
+  )
+
+
+p2<-ggvenn(
+  y, 
+  fill_color = c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4)
+
+ggarrange(p1, p2, labels = c("a)", "b)"))
+
+##### genus level
+
+frog_genus<-tax_glom(frog_filtered, taxrank = "Genus")
+frog_genus<-core(frog_genus, detection = 0, prevalence = 0.05)
+
+frog_uu<-subset_samples(frog_genus, Treatment == "UU")
+frog_uu<-prune_taxa(taxa_sums(frog_uu)>0, frog_uu)
+
+frog_cc<-subset_samples(frog_genus, Treatment == "CC")
+frog_cc<-prune_taxa(taxa_sums(frog_cc)>0, frog_cc)
+
+frog_cu<-subset_samples(frog_genus, Treatment == "CU")
+frog_cu<-prune_taxa(taxa_sums(frog_cu)>0, frog_cu)
+
+frog_uc<-subset_samples(frog_genus, Treatment == "UC")
+frog_uc<-prune_taxa(taxa_sums(frog_uc)>0, frog_uc)
+
+uu_asvs<-taxa_names(frog_uu)
+cc_asvs<-taxa_names(frog_cc)
+uc_asvs<-taxa_names(frog_uc)
+cu_asvs<-taxa_names(frog_cu)
+
+x <- list(
+  UU = uu_asvs, 
+  CU = cu_asvs, 
+  UC = uc_asvs,
+  CC = cc_asvs
+  )
+
+
+ggvenn(
+  x, 
+  fill_color = c("#0073C2FF", "#EFC000FF", "#868686FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4)
+
+```
+
+# Heat map
+
+```{r include = F}
+
+frog_genus<-tax_glom(frog_filtered, taxrank = "Genus")
+frog_genus_core<-core(frog_genus, detection = 0, prevalence = 0.92)
+
+pseqz <- microbiome::transform(frog_genus_core, "compositional")
+pseqz <- microbiome::transform(pseqz, "hellinger")
+#pseqz <- microbiome::transform(pseqz, "compositional")
+sample_data(pseqz)<-sample_data(pseqz)[,c(1,4)]
+
+#dfm <- melt(round(abundances(pseqz), 1))
+dfm <- psmelt(pseqz)
+
+#colnames(dfm) <- c("Taxa", "Sample", "value")
+
+
+
+heat(dfm,"feature.id", "Genus", "Abundance", 
+      colours = c("white", "red", "darkred"),
+     limits = c(0,1),
+     order.rows = T,
+     order.cols = T) +
+  theme(text=element_text(size=10), 
+        axis.text.x = element_blank(),
+        legend.key.size = unit(1.2, "cm"))+
+  facet_wrap(~Treatment, scales = "free_x", ncol = 4)+
+  theme(panel.grid.minor = element_line(colour="black", size=1))
+
+############# ASV
+
+
+frog_core<-core(frog_filtered, detection = 0, prevalence = 0.80)
+
+pseqz <- microbiome::transform(frog_core, "compositional")
+pseqz <- microbiome::transform(pseqz, "hellinger")
+#pseqz <- microbiome::transform(pseqz, "compositional")
+sample_data(pseqz)<-sample_data(pseqz)[,c(1,4)]
+
+#dfm <- melt(round(abundances(pseqz), 1))
+dfm <- psmelt(pseqz)
+
+#colnames(dfm) <- c("Taxa", "Sample", "value")
+
+
+
+heat(dfm,"feature.id", "OTU", "Abundance", 
+      colours = c("white", "red", "darkred"),
+     limits = c(0,1),
+     order.rows = T,
+     order.cols = T) +
+  theme(text=element_text(size=10), 
+        axis.text.x = element_blank(),
+        legend.key.size = unit(1.2, "cm"))+
+  facet_wrap(~Treatment, scales = "free_x", ncol = 4)+
+  theme(panel.grid.minor = element_line(colour="black", size=1))
+
+```
+
+
+# Taxa levels changes: Relative abundance
+
+```{r}
+
+
+frog_genus<- microbiome::aggregate_top_taxa(frog_rare, "Genus", top = 20)
+
+taxtable<-data.frame(tax_table(frog_genus))
+taxa_names(frog_genus)<-taxtable$Genus
+taxa_names(frog_genus)
+
+#### table
+
+UU_top<-subset_samples(frog_genus, Treatment == "UU") %>% transform("compositional")
+UU_prev<-prevalence(UU_top)
+UU_prev$Treatment<-"UU"
+
+
+CU_top<-subset_samples(frog_genus, Treatment == "CU")%>% transform("compositional")
+CU_prev<-prevalence(CU_top)
+CU_prev$Treatment<-"CU"
+
+
+UC_top<-subset_samples(frog_genus, Treatment == "UC") %>% transform("compositional")
+UC_prev<-prevalence(UC_top)
+UC_prev$Treatment<-"UC"
+
+
+CC_top<-subset_samples(frog_genus, Treatment == "CC") %>% transform("compositional")
+CC_prev<-prevalence(CC_top)
+CC_prev$Treatment<-"CC"
+
+prev_df<-rbind(UU_prev, UC_prev, CU_prev, CC_prev)
+prev_df$Treatment <- factor(prev_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+palx<-brewer.pal(12,"Paired")
+paly<-brewer.pal(12,"Dark2")
+pali<-brewer.pal(12,"Pastel1")
+
+palz<-c(palx,paly, pali,palx,paly, pali)
+scales::show_col(palz)
+palz[12]<-"blue"
+palz[14]<-"cyan3"
+palz[15]<-"deeppink3"
+palz[10]<-"darkviolet"
+  
+prev_df<-prev_df %>%  mutate(label = ifelse(Treatment == "CC", as.character(Genus), NA)) 
+levels(prev_df$Treatment) <- c(levels(prev_df$Treatment),'') # add blank level
+
+df<-subset(prev_df, Genus != "Other" & Genus !="Unknown" & Genus !="uncultured bacterium")
+length(unique(df$Genus))
+
+
+
+p1<-ggplot(subset(prev_df, Genus != "Other" & Genus !="Unknown" & Genus !="uncultured bacterium" & Genus !="Janthinobacterium" &  Genus !="Pedobacter" &  Genus !="Delftia"), aes(y = MeanAbundance, x = Treatment, group = Genus))+
+  
+  geom_line(aes(col = Genus), size = 1.5)+
+  geom_point(aes(fill = Genus), size = 2, col = "black", pch = 21)+
+  scale_color_manual(values = palz)+
+  scale_fill_manual(values = palz)+
+  scale_y_log10()+
+  theme_bw(base_size = 14)+
+  theme(legend.position = "none")+
+  scale_x_discrete(drop=FALSE)+
+  
+  geom_label_repel(aes(label = label, fill = Genus),
+                  alpha = 0.6,nudge_x = 1, fontface="bold",
+                  na.rm = TRUE)+
+  ylab("Mean relative abundance")
+
+
+
+
+## ASV level ###
+## ASV level ###
+## ASV level ###
+## ASV level ###
+
+
+frog_asv<- core(frog_rare, detection = 0, prevalence = 0.94)
+
+
+#### table
+
+UU_top<-subset_samples(frog_asv, Treatment == "UU") %>% transform("compositional")
+UU_prev<-prevalence(UU_top)
+UU_prev$Treatment<-"UU"
+UU_prev$ASV<-row.names(UU_prev)
+
+
+CU_top<-subset_samples(frog_asv, Treatment == "CU")%>% transform("compositional")
+CU_prev<-prevalence(CU_top)
+CU_prev$Treatment<-"CU"
+CU_prev$ASV<-row.names(CU_prev)
+
+
+
+UC_top<-subset_samples(frog_asv, Treatment == "UC") %>% transform("compositional")
+UC_prev<-prevalence(UC_top)
+UC_prev$Treatment<-"UC"
+UC_prev$ASV<-row.names(UC_prev)
+
+
+
+CC_top<-subset_samples(frog_asv, Treatment == "CC") %>% transform("compositional")
+CC_prev<-prevalence(CC_top)
+CC_prev$Treatment<-"CC"
+CC_prev$ASV<-row.names(CC_prev)
+
+
+
+prev_df_asv<-rbind(UU_prev, UC_prev, CU_prev, CC_prev)
+prev_df_asv$Treatment <- factor(prev_df_asv$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+palx<-brewer.pal(12,"Paired")
+paly<-brewer.pal(12,"Dark2")
+
+palz<-c(palx,paly)
+  
+prev_df_asv<-prev_df_asv %>%  mutate(label = ifelse(Treatment == "CC", as.character(ASV), NA)) 
+levels(prev_df_asv$Treatment) <- c(levels(prev_df_asv$Treatment),'') # add blank level
+
+p2<-ggplot(prev_df_asv, aes(y = MeanAbundance, x = Treatment, group = ASV))+
+  
+  geom_line(aes(col = ASV), size = 1.5)+
+  geom_point(aes(fill = ASV), size = 2, col = "black", pch = 21)+
+  scale_color_manual(values = palz)+
+  scale_fill_manual(values = palz)+
+  scale_y_log10()+
+  theme_bw(base_size = 14)+
+  theme(legend.position = "none")+
+  scale_x_discrete(drop=FALSE)+
+  
+  geom_label_repel(aes(label = label, fill = ASV),
+                  alpha = 0.7,nudge_x = 1,
+                  na.rm = TRUE)
+
+
+ggarrange(p1, p2, ncol = 2)
+
+```
+
+
+# Alpha diversity
+
+```{r}
+
+alpha_df<-data.frame(estimate_richness(frog_rare))
+
+alpha_df$Faiths_PD<-as.numeric(metagMisc::phyloseq_phylo_div(frog_rare, "PD")$PD)
+row.names(alpha_df)<-sample_names(frog_filtered)
+
+metadata<-data.frame(sample_data(frog_filtered))
+metadata<-merge(metadata, alpha_df, by = 0)
+summary(metadata$Observed)
+
+
+# ACE = Fisher = Observed = Chao1 (=) ACE.se
+
+metadata$Treatment <- factor(metadata$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+# scale variables
+
+metadata$Mass_scaled<-as.numeric(scale(metadata$Mass))
+metadata$Seq_depth_transformed<-as.numeric(scale(sqrt(metadata$Seq_depth)))
+
+
+```
+
+
+
+
+## Model/distribution selection
+```{r}
+
+## choose best distributions for 3 measures of alpha diversity
+
+
+EnvStats::distChoose(metadata$Observed)$decision
+EnvStats::distChoose(metadata$InvSimpson)$decision
+EnvStats::distChoose(metadata$Shannon)$decision
+
+#### observed 
+
+observed_model<-glm(Observed~Treatment + Seq_depth_transformed+Sex+Mass_scaled, family= Gamma(link = "log"), data = metadata)
+
+observed_model2<-glm(Observed~Treatment + Seq_depth_transformed+Sex+Mass_scaled, family= Gamma(link = "identity"), data = metadata) # technically correct?
+
+observed_model3<-lm(Observed~Treatment + Seq_depth_transformed+Sex+Mass_scaled,  data = metadata) # best
+
+
+AIC(observed_model, observed_model2, observed_model3)
+
+
+######## invnormal ###
+######## invnormal ###
+######## invnormal ###
+
+invsimp_model<-glm(InvSimpson~Treatment + Seq_depth_transformed+Sex, family= Gamma(link = "log"), data = metadata) # best
+
+
+invsimp_model2<-glm(InvSimpson~Treatment + Seq_depth_transformed+Sex, family= Gamma(link = "identity"), data = metadata)
+
+
+invsimp_model3<-lm(InvSimpson~Treatment + Seq_depth_transformed+Sex,  data = metadata)
+
+
+AIC(invsimp_model, invsimp_model2, invsimp_model3)
+
+##### shannon ########
+##### shannon ########
+##### shannon ########
+##### shannon ########
+
+shannon_model<-glm(Shannon~Treatment + Seq_depth_transformed+Sex+Mass_scaled, family= Gamma(link = "log"), data = metadata) # best
+
+
+shannon_model2<-glm(Shannon~Treatment + Seq_depth_transformed+Sex+Mass_scaled, family= Gamma(link = "identity"), data = metadata)
+
+
+shannon_model3<-lm(Shannon~Treatment + Seq_depth_transformed+Sex+Mass_scaled,  data = metadata) # best (sort of)
+
+AIC(shannon_model, shannon_model2, shannon_model3)
+
+
+```
+
+
+## Fitting final models
+```{r}
+
+
+# final model
+
+observed_model<-lm(Observed~Treatment +Sex +  Seq_depth_transformed, data = metadata)
+
+summary(observed_model)
+
+
+r2beta(observed_model, partial = TRUE, method = "sgv", data = metadata)
+
+
+#### GET CONFIDENCE INTERVALS 
+summary<-data.frame(confint(observed_model))
+summaryest<-summary(observed_model) # add estimate as column
+summaryest<-data.frame(summaryest$coefficients)
+
+summary$Estimate<-summaryest$Estimate
+summary<-summary[c(1:4),] #keep just first 4 rows
+
+summary[2:4,]<-summary[2:4,]+summary[1,3] # add intercept to estimates for forest and organic
+row.names(summary)<-c("UU", "CU", "UC", "CC")
+names(summary)<-c("CI_lower", "CI_upper", "Est")
+summary$Treatment<-row.names(summary)
+summary$Treatment<-factor(summary$Treatment, levels = c(c("UU", "CU", "UC", "CC")))
+
+
+# standard errors
+
+summary_coef1<-summary(observed_model)
+summary_coef1$coefficients
+summary_coef1<- data.frame(summary_coef1$coefficients)
+names(summary_coef1)
+
+summary$SE_lower<-summary$Est-summary_coef1$Std..Error[1:4]
+summary$SE_upper<-summary$Est+summary_coef1$Std..Error[1:4]
+
+summary1<-summary
+
+### ESIMATES AND CONFIDENCE INTERBALS ARE BACKTRANSFORMED IN PLOT USING EXP()
+
+p1<-ggplot(summary1, aes( x =Treatment, y = Est))+
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0, col = "grey", size = 1.5)+
+  geom_errorbar(aes(ymin = SE_lower, ymax = SE_upper), width = 0,  size = 1.5)+
+   geom_point( size = 4, pch = 21, fill = "black", col = "grey")+
+  theme_light(base_size = 14)+
+  ylab("Observed ASV richness")+
+  theme(legend.position = "none")+
+  xlab("")
+
+############ inverse simpson  ##################
+############ inverse simpson  ##################
+############ inverse simpson  ##################
+############ inverse simpson  ##################
+
+
+# final model
+invsimp_model<-glm(InvSimpson~Treatment +Sex+ Seq_depth_transformed, family= Gamma(link = "log"), data = metadata)
+
+
+summary(invsimp_model)
+
+
+r2beta(invsimp_model, partial = TRUE, method = "sgv", data = metadata)
+
+
+#### GET CONFIDENCE INTERVALS FROM GAMMA
+
+summary2<-data.frame(confint(invsimp_model))
+summary2est<-summary(invsimp_model) # add estimate as column
+summary2est<-data.frame(summary2est$coefficients)
+
+summary2$Estimate<-summary2est$Estimate
+summary2<-summary2[c(1:4),] #keep just first 4 rows
+
+summary2[2:4,]<-summary2[2:4,]+summary2[1,3] # add intercept to estimates for forest and organic
+row.names(summary2)<-c("UU", "CU", "UC", "CC")
+names(summary2)<-c("CI_lower", "CI_upper", "Est")
+summary2$Treatment<-row.names(summary2)
+summary2$Treatment<-factor(summary2$Treatment, levels = c(c("UU", "CU", "UC", "CC")))
+
+
+# standard errors
+
+summary2_coef1<-summary(invsimp_model)
+summary2_coef1$coefficients
+summary2_coef1<- data.frame(summary2_coef1$coefficients)
+names(summary2_coef1)
+
+summary2$SE_lower<-summary2$Est-summary2_coef1$Std..Error[1:4]
+summary2$SE_upper<-summary2$Est+summary2_coef1$Std..Error[1:4]
+
+### ESIMATES AND CONFIDENCE INTERBALS ARE BACKTRANSFORMED IN PLOT USING EXP()
+
+p2<-ggplot(summary2, aes( x =Treatment, y = exp(Est)))+
+  geom_errorbar(aes(ymin = exp(CI_lower), ymax = exp(CI_upper)), width = 0, col = "grey", size = 1.5)+
+  geom_errorbar(aes(ymin = exp(SE_lower), ymax = exp(SE_upper)), width = 0,  size = 1.5)+
+   geom_point( size = 4, pch = 21, fill = "black", col = "grey")+
+  theme_light(base_size = 14)+
+  ylab("Inverse Simpson Index")+
+  theme(legend.position = "none")
+
+
+################ shannon ##################
+################ shannon ##################
+################ shannon ##################
+################ shannon ##################
+
+# final model
+
+shannon_model<-lm(Shannon~Treatment +Sex+ Seq_depth_transformed,  data = metadata)
+summary(shannon_model)
+
+
+r2beta(shannon_model, partial = TRUE, method = "sgv", data = metadata)
+
+
+#### GET CONFIDENCE INTERVALS FROM GAMMA
+
+summary3<-data.frame(confint(shannon_model))
+summary3est<-summary(shannon_model) # add estimate as column
+summary3est<-data.frame(summary3est$coefficients)
+
+summary3$Estimate<-summary3est$Estimate
+summary3<-summary3[c(1:4),] #keep just first 4 rows
+
+summary3[2:4,]<-summary3[2:4,]+summary3[1,3] # add intercept to estimates for forest and organic
+row.names(summary3)<-c("UU", "CU", "UC", "CC")
+names(summary3)<-c("CI_lower", "CI_upper", "Est")
+summary3$Treatment<-row.names(summary3)
+summary3$Treatment<-factor(summary3$Treatment, levels = c(c("UU", "CU", "UC", "CC")))
+
+
+# standard errors
+
+summary3_coef1<-summary(shannon_model)
+summary3_coef1$coefficients
+summary3_coef1<- data.frame(summary3_coef1$coefficients)
+names(summary3_coef1)
+
+summary3$SE_lower<-summary3$Est-summary3_coef1$Std..Error[1:4]
+summary3$SE_upper<-summary3$Est+summary3_coef1$Std..Error[1:4]
+
+### ESIMATES AND CONFIDENCE INTERBALS ARE BACKTRANSFORMED IN PLOT USING EXP()
+
+p3<-ggplot(summary3, aes( x =Treatment, y = Est))+
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0, col = "grey", size = 1.5)+
+  geom_errorbar(aes(ymin = SE_lower, ymax = SE_upper), width = 0,  size = 1.5)+
+   geom_point( size = 4, pch = 21, fill = "black", col = "grey")+
+  theme_light(base_size = 14)+
+  ylab("Shannon Index")+
+  theme(legend.position = "none")+
+  xlab("")
+
+
+
+ggpubr::ggarrange(p1, p2, p3, ncol = 3, labels = c("a)", "b)", "c)"))
+
+tab_model(observed_model, invsimp_model, shannon_model,  pred.labels = c("Intercept [UU]", "Treatment [CU]", "Treatment [UC]", "Treatment [CC]",  "Sex [Male]", "Sequencing depth"), dv.labels = c("a) Observed ASV richness", "b) Inverse Simpson", "c) Shannon"))
+
+#ggsave("Figures/Fig3.pdf")
+
+
+```
+
+# Beta diversity - constrained ordination
+
+## Weighted Unifrac
+
+```{r}
+
+#############
+
+
+wunifrac_dist<-distance(frog_rare, method = "wunifrac")
+otutable<-data.frame(t(frog_rare@otu_table@.Data))
+metadata <- data.frame(sample_data(frog_rare))
+
+
+Treatment <- metadata$Treatment
+Seq_depth <- as.numeric(scale(metadata$Seq_depth))
+Mass <-metadata$Mass
+Sex<-as.factor(metadata$Sex)
+Date<-as.factor(metadata$date_cat)
+
+metadata<- metadata %>% mutate(MassCat = case_when((Mass <2.45 ~ "Light"),
+                                          (Mass > 3 ~ "Heavy")))
+
+metadata$MassCat <-ifelse(is.na(metadata$MassCat), "Average", metadata$MassCat)
+                                            
+MassCat <-as.factor(metadata$MassCat)
+
+
+final_model<-capscale(wunifrac_dist ~ 
+                   Treatment+
+                   Seq_depth+
+                     Sex,
+                env = metadata, 
+                comm = otutable) 
+
+
+
+
+# Note: including mass reduces effect of treatment - mechanism?
+
+# weighted unifrac
+
+anova_wunifrac<-anova.cca(final_model, by="terms")
+anova_wunifrac
+
+####### plot #####
+####### plot #####
+####### plot #####
+
+
+## extract data from model
+
+final_model_df<-scores(final_model)
+
+# extract CAP scores
+
+vectors_df<-data.frame(final_model_df$sites)
+vectors_df$feature.id<-row.names(vectors_df)
+
+
+# merge with info on dominant family
+
+sample_metadata<-data.frame(sample_data(frog_rare))[,c("feature.id", "Treatment")]
+vectors_df<-merge(vectors_df, sample_metadata, by = "feature.id")
+
+
+#### add arrows #########
+#### add arrows #########
+#### add arrows #########
+#### add arrows #########
+
+centroids_df<-data.frame(final_model_df$centroids)
+centroids_df<-centroids_df[1:6,]
+centroids_df
+row.names(centroids_df)<-c("Treatment: UU", "Treatment: CU","Treatment: UC","Treatment: CC", "Sex:F", "SexM" )
+
+
+
+### add taxa scores ########
+### add taxa scores ########
+### add taxa scores ########
+### add taxa scores ########
+
+
+
+species_scores<-data.frame(final_model_df$species)
+
+summary(species_scores$CAP1)
+summary(species_scores$CAP2)
+
+
+species_scores<-subset(species_scores,  (CAP2 > 0.2 | CAP2 < -0.2) |  (CAP1 > 0.2 | CAP1 < -0.2))
+
+species_scores$CAP1<-species_scores$CAP1 *4
+species_scores$CAP2<-species_scores$CAP2 *4
+
+###########
+###########
+###########
+###########
+
+vectors_wunifrac<-vectors_df
+centroids_wunifrac<-centroids_df
+species_wunifrac<-species_scores
+
+# colour palette
+pal<-pals::stepped3()[c(1,5,9,13)]
+pal<-pals::tol()[c(1,3,4,12)]
+
+
+plot_wunifrac<-ggplot(vectors_wunifrac, aes(x = CAP1, y = CAP2))+
+ 
+   stat_ellipse(geom = "polygon", aes(fill = Treatment, col = Treatment), level = 0.9, alpha = 0.3, size = 0.5)+
+  geom_point(aes(fill =Treatment), pch = 21, size = 3, alpha = 1, stroke = 1, col = "black")+
+  
+  theme_bw()+
+ scale_fill_viridis(discrete = TRUE)+
+ scale_color_viridis(discrete = TRUE)+
+  
+  # add arrows
+  
+  geom_segment(data=centroids_wunifrac[1:4,], aes(x = 0, y = 0, xend = CAP1*2, yend = CAP2*2),
+    arrow = arrow(length = unit(0.5, "cm"), type = "closed"), lwd = 1,  col = "black")+
+  ggrepel::geom_label_repel(data=centroids_wunifrac[1:4,],  
+    alpha = 0.9, col = "black", size = 4, fill = "yellow", 
+    #hjust = c(0,1), 
+    #vjust = c(1,1),
+    aes(CAP1*2, CAP2*2, label = row.names(centroids_wunifrac[1:4,])))+
+  
+    # add species
+ # geom_point(data = species_scores,  size = 6, col = "black", pch = 8, stroke = 0, alpha = 0)+
+#  geom_label_repel(data=species_scores,  
+#    alpha = 0.9, col = "black", size = 3.5, fill = "skyblue", 
+#    aes( label = row.names(species_scores)))+
+
+
+  theme_light(base_size = 14)+
+  ggtitle("a) Treatment: WU")
+
+
+
+```
+
+## Bray Curtis
+```{r}
+
+#############
+
+bray_dist<-distance(frog_rare, method = "bray")
+otutable<-data.frame(t(frog_rare@otu_table@.Data))
+metadata <- data.frame(sample_data(frog_rare))
+
+
+Treatment <- metadata$Treatment
+Seq_depth <- as.numeric(scale(metadata$Seq_depth))
+Mass <-metadata$Mass
+Sex<-as.factor(metadata$Sex)
+Date<-as.factor(metadata$date_cat)
+
+metadata<- metadata %>% mutate(MassCat = case_when((Mass <2.45 ~ "Light"),
+                                          (Mass > 3 ~ "Heavy")))
+
+metadata$MassCat <-ifelse(is.na(metadata$MassCat), "Average", metadata$MassCat)
+                                            
+MassCat <-as.factor(metadata$MassCat)
+
+
+
+final_model<-capscale(bray_dist ~ 
+                   Treatment+
+                    Seq_depth+
+                     Sex,
+
+                env = metadata, 
+                comm = otutable) 
+
+
+
+# Note: including mass reduces effect of treatment - mechanism?
+
+# weighted bray
+
+anova_bray<-anova.cca(final_model, by="terms")
+round(data.frame(anova_bray), 3)
+round(data.frame(anova_wunifrac), 3)
+
+
+####### plot #####
+####### plot #####
+####### plot #####
+
+
+## extract data from model
+
+final_model_df<-scores(final_model)
+
+
+# extract CAP scores
+
+vectors_df<-data.frame(final_model_df$sites)
+vectors_df$feature.id<-row.names(vectors_df)
+
+
+# merge with info on dominant family
+
+sample_metadata<-data.frame(sample_data(frog_rare))[,c("feature.id", "Treatment")]
+vectors_df<-merge(vectors_df, sample_metadata, by = "feature.id")
+
+
+
+#### add arrows #########
+#### add arrows #########
+#### add arrows #########
+#### add arrows #########
+
+centroids_df<-data.frame(final_model_df$centroids)
+centroids_df<-centroids_df[1:6,]
+row.names(centroids_df)<-c("Treatment: UU", "Treatment: CU","Treatment: UC","Treatment: CC", "SexF", "SexM" )
+
+
+
+### add taxa scores ########
+### add taxa scores ########
+
+
+species_scores<-data.frame(final_model_df$species)
+
+summary(species_scores$CAP1)
+summary(species_scores$CAP2)
+
+
+species_scores<-subset(species_scores,  (CAP2 > 0.2 | CAP2 < -0.2) |  (CAP1 > 0.2 | CAP1 < -0.2))
+
+species_scores$CAP1<-species_scores$CAP1 *3
+species_scores$CAP2<-species_scores$CAP2 *3
+
+###########################
+###########################
+###########################
+###########################
+
+plot_bray<-ggplot(vectors_df, aes(x = CAP1, y = CAP2))+
+ 
+    stat_ellipse(geom = "polygon", aes(fill = Treatment, col = Treatment), level = 0.9, alpha = 0.3, size = 0.5)+
+  geom_point(aes(fill =Treatment), pch = 21, size = 3, alpha = 1, stroke = 1, col = "black")+
+  
+
+ scale_fill_viridis(discrete = TRUE)+
+ scale_color_viridis(discrete = TRUE)+
+  
+  # add arrows
+  
+  geom_segment(data=centroids_df[1:4,], aes(x = 0, y = 0, xend = CAP1*2, yend = CAP2*2),
+    arrow = arrow(length = unit(0.5, "cm"), type = "closed"), lwd = 1,  col = "black")+
+  ggrepel::geom_label_repel(data=centroids_df[1:4,],  
+    alpha = 0.9, col = "black", size = 4, fill = "yellow", 
+
+    aes(CAP1*2, CAP2*2, label = row.names(centroids_df[1:4,])))+
+  
+    # add species
+ # geom_point(data = species_scores,  size = 6, col = "black", pch = 8, stroke = 0, alpha = 0)+
+#  geom_label_repel(data=species_scores,  
+#    alpha = 0.9, col = "black", size = 3.5, fill = "skyblue", 
+#    aes( label = row.names(species_scores)))+
+
+
+  theme_light(base_size = 14)+
+  ggtitle("b) Treatment: BC")
+
+
+### plot together
+
+treatment_plots<-ggarrange(plot_wunifrac, plot_bray,  common.legend = T, legend = "right")
+
+```
+
+## Group by sex
+```{r}
+
+sex_wunifrac<-ggplot(vectors_wunifrac, aes(x = CAP1, y = CAP2))+
+ 
+   stat_ellipse(geom = "polygon", aes(fill = Sex, col = Sex), level = 0.9, alpha = 0.3, size = 0.5)+
+  geom_point(aes(fill =Sex), pch = 21, size = 3, alpha = 1, stroke = 1, col = "black")+
+  
+  theme_bw()+
+ scale_fill_manual(values = c("skyblue", "darkred"))+
+ scale_color_manual(values = c("skyblue", "darkred"))+
+  
+  # add arrows
+  
+  geom_segment(data=centroids_wunifrac[5:6,], aes(x = 0, y = 0, xend = CAP1*2, yend = CAP2*2),
+    arrow = arrow(length = unit(0.5, "cm"), type = "closed"), lwd = 1,  col = "black")+
+  ggrepel::geom_label_repel(data=centroids_wunifrac[5:6,],  
+    alpha = 0.9, col = "black", size = 4, fill = "yellow", 
+    #hjust = c(0,1), 
+    #vjust = c(1,1),
+    aes(CAP1*2, CAP2*2, label = row.names(centroids_wunifrac[5:6,])))+
+  theme_light(base_size = 14)+
+  ggtitle("c) Sex: WU")+
+  theme(plot.margin = margin(0.2,0.8,0.2,0.2, "cm")) 
+
+#################
+#################
+#################
+#################
+
+
+sex_bray<- ggplot(vectors_df, aes(x = CAP1, y = CAP2))+
+ 
+    stat_ellipse(geom = "polygon", aes(fill = Sex, col = Sex), level = 0.9, alpha = 0.3, size = 0.5)+
+  geom_point(aes(fill =Sex), pch = 21, size = 3, alpha = 1, stroke = 1, col = "black")+
+  
+
+ scale_fill_manual(values = c("skyblue", "darkred"))+
+ scale_color_manual(values = c("skyblue", "darkred"))+
+
+  # add arrows
+  
+  geom_segment(data=centroids_df[5:6,], aes(x = 0, y = 0, xend = CAP1*2, yend = CAP2*2),
+    arrow = arrow(length = unit(0.5, "cm"), type = "closed"), lwd = 1,  col = "black")+
+  ggrepel::geom_label_repel(data=centroids_df[5:6,],  
+    alpha = 0.9, col = "black", size = 4, fill = "yellow", 
+
+    aes(CAP1*2, CAP2*2, label = row.names(centroids_df[5:6,])))+
+
+
+  theme_light(base_size = 14)+
+  ggtitle("d) Sex: BC")+
+  theme(plot.margin = margin(0.2,1.3,0.2,0, "cm")) 
+
+sex_plots<-ggarrange(sex_wunifrac, sex_bray,  common.legend = T, legend = "right") 
+
+
+ggarrange(treatment_plots, sex_plots,  common.legend = T, legend = "right", nrow = 2, align = "v")
+
+#ggsave("Figures/Fig4.pdf")
+
+```
+
+
+# Joint-species distribution modelling
+## JSDM: Genus level
+
+
+```{r}
+# https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.13303
+
+# final model 
+
+frog_genus<-tax_glom(frog_filtered, taxrank = "Genus")
+
+frog_genus_core<-core(frog_genus, detection = 20, prevalence = 0.70)
+#frog_genus_core<-microbiome::aggregate_top_taxa(frog_filtered, "Genus", top = 45)
+
+frog_genus
+frog_genus_core
+sum(sample_sums(frog_genus_core))/sum(sample_sums(frog_genus))
+
+
+taxtable<-data.frame(tax_table(frog_genus_core))
+
+frog_genus_core<-subset_taxa( frog_genus_core, Genus != "uncultured" )
+frog_genus_core<-subset_taxa( frog_genus_core, Genus != "metagenome" )
+frog_genus_core<-subset_taxa( frog_genus_core, Genus != "uncultured bacterium" )
+frog_genus_core<-subset_taxa( frog_genus_core, Genus != "Other" )
+frog_genus_core<-subset_taxa( frog_genus_core, Genus != "Unknown" )
+frog_genus_core<-subset_taxa( frog_genus_core, Genus != "Allorhizobium-Neorhizobium-Pararhizobium-Rhizobium" )
+frog_genus_core<-subset_taxa( frog_genus_core, Genus != "CL500-29 marine group" )
+
+taxa_keep<- taxa_names(frog_genus_core)
+
+sum(sample_sums(frog_genus_core))/sum(sample_sums(frog_genus))
+
+taxtable<-data.frame(tax_table(frog_genus_core))
+
+taxa_names(frog_genus_core)<- taxtable$Genus
+
+
+## Extract relevant data for model
+
+y <- data.frame(t(otu_table(frog_genus_core)))
+X<-data.frame(sample_data(frog_genus_core))
+
+
+X$Mass_scaled<-as.numeric(scale(X$Mass))
+X$Seq_depth_scaled<-as.numeric(scale(sqrt(X$Seq_depth)))
+
+X<-X[,c("Treatment", "Mass_scaled", "Seq_depth_scaled", "Sex")]
+```
+
+### Model comparison
+```{r eval = F}
+
+
+fit_1LV <- gllvm(y, X, 
+             num.lv = 1,
+            formula = ~ Treatment+ Sex  + Seq_depth_scaled, 
+             family = "negative.binomial")
+
+fit_2LV <- gllvm(y, X, 
+             num.lv = 2,
+            formula = ~ Treatment+ Sex + Seq_depth_scaled, 
+             family = "negative.binomial")
+
+
+fit_3LV <- gllvm(y, X, 
+             num.lv = 3,
+            formula = ~ Treatment+ Sex  + Seq_depth_scaled, 
+             family = "negative.binomial")
+
+
+
+
+# compare AIC
+
+AIC( fit_1LV, fit_2LV, fit_3LV)
+
+
+
+```
+
+### Final model
+```{r}
+
+fit <- gllvm(y, X, 
+             num.lv = 3,
+            formula = ~ Treatment+ Sex + Seq_depth_scaled, 
+             family = "negative.binomial")
+
+coefplot(fit, cex.ylab = 1, mar = c(5,12,2,1), which.Xcoef = c(1:4))
+
+dev.off()
+
+cr1<-getResidualCor(fit)
+
+corrplot::corrplot(cr1, type = "lower", order = "hclust", tl.cex = 0.7)
+
+dev.off()
+
+```
+
+### Extract estimates 
+```{r}
+
+### extract estimates and CIs ###
+### extract estimates and CIs ###
+
+
+df<-coef(fit)
+est_df<-data.frame(df$Intercept)
+
+est_df2<-data.frame(df$Xcoef)[,1:3] # choose columns of interest
+
+est_df3<-merge(est_df, est_df2, by = 0)
+
+est_df3$CU_est<- est_df3$TreatmentCU+est_df3$df.Intercept
+est_df3$UC_est<- est_df3$TreatmentUC+est_df3$df.Intercept
+est_df3$CC_est<- est_df3$TreatmentCC+est_df3$df.Intercept
+est_df3<-est_df3[,c(1,2,6:8)]
+
+# order genera
+
+row.names(est_df3)<-est_df3$Row.names
+est_df3<-est_df3[taxa_names(frog_genus_core),]
+
+
+############# extract confindence intervals  ####
+############# extract confindence intervals  ####
+############# extract confindence intervals  ####
+############# extract confindence intervals  ####
+
+
+confint_df<-data.frame(confint(fit))
+
+confint_df$row<- 1:nrow(confint_df)
+
+confint_df<-confint_df[190:437,] # manually choose rows that represent estimates for variable of interest, including intercept
+confint_df$row<- 1:nrow(confint_df)
+
+
+# add a column with correct variable level
+
+#confint_df$Treatment<-c(rep("UU", 40), rep("CU", 40), rep("UC", 40), rep("CC", 40))
+confint_df$Treatment<-c(rep("UU", nrow(est_df)), rep("CU", nrow(est_df)), rep("UC", nrow(est_df)), rep("CC", nrow(est_df)))
+
+# column with taxa names. Should be automatically in the correct order but double check
+confint_df$Genus<-c(taxa_names(frog_genus_core), taxa_names(frog_genus_core), taxa_names(frog_genus_core), taxa_names(frog_genus_core))
+
+
+
+### extract standard errors #######
+### extract standard errors #######
+### extract standard errors #######
+### extract standard errors #######
+
+se_df<-se(fit)
+se1<-data.frame(se_df$sd$Xcoef)[,1:3] # select relevant columns
+se2<- data.frame(se_df$sd$beta0)
+se_df<-merge(se1, se2, by = 0)
+row.names(se_df)<-se_df$Row.names
+se_df<-se_df[taxa_names(frog_genus_core),]
+names(se_df)<-c("Genus", "CU", "UC", "CC", "UU")
+
+
+# now have estimates, confidence intervals, and standard errors as seperate data frames, but they are in different formats. Need to massage them into one dataframe for plotting.
+
+
+### get estimates and confidence intervals for UU (reference group)
+
+UU_ci<-subset(confint_df, Treatment == "UU")
+
+UU_df<- data.frame(est_df3$df.Intercept, UU_ci$X2.5.., UU_ci$X97.5.., UU_ci$Genus, se_df$UU)
+names(UU_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
+UU_df$Treatment <-"UU"
+
+# get estimates and CIs for CU. This needs to be modifed
+
+CU_ci<-subset(confint_df, Treatment == "CU")
+
+CU_df<- data.frame(est_df3$CU_est, est_df3$df.Intercept, CU_ci$X2.5.., CU_ci$X97.5.., CU_ci$Genus, se_df$CU)
+
+CU_df$CU_ci.X2.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X2.5..
+CU_df$CU_ci.X97.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X97.5..
+CU_df<-CU_df[,c(1,3:6)]
+
+names(CU_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
+CU_df$Treatment <-"CU"
+
+
+# get estimates and CIs for UC
+
+UC_ci<-subset(confint_df, Treatment == "UC")
+
+UC_df<- data.frame(est_df3$UC_est, est_df3$df.Intercept, UC_ci$X2.5.., UC_ci$X97.5.., UC_ci$Genus, se_df$UC)
+UC_df$UC_ci.X2.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X2.5..
+UC_df$UC_ci.X97.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X97.5..
+UC_df<-UC_df[,c(1,3:6)]
+names(UC_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
+UC_df$Treatment <-"UC"
+
+
+# get estimates and CIs for CC
+
+CC_ci<-subset(confint_df, Treatment == "CC")
+
+CC_df<- data.frame(est_df3$CC_est, est_df3$df.Intercept, CC_ci$X2.5.., CC_ci$X97.5.., CC_ci$Genus, se_df$CC)
+CC_df$CC_ci.X2.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X2.5..
+CC_df$CC_ci.X97.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X97.5..
+CC_df<-CC_df[,c(1,3:6)]
+names(CC_df)<-c("Est", "Lower_CI", "Upper_CI", "Genus", "SE")
+CC_df$Treatment <-"CC"
+
+
+treatment_ci_df<-rbind(UU_df, CU_df, UC_df, CC_df)
+
+
+treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+
+## get p values
+
+
+summary<-summary(fit)
+summary_df<-data.frame(summary$Coef.tableX)
+summary_df$nrow <- 1:nrow(summary_df)
+#View(summary_df)
+summary_df<-summary_df[1:186,] # keep only treatment stats
+
+treatment_ci_df$P_val<-NA
+treatment_ci_df$Significant<-NA
+
+dim(treatment_ci_df)
+
+treatment_ci_df$P_val[63:248]<- summary_df$Pr...z..
+
+treatment_ci_df$Significant<-ifelse(treatment_ci_df$P_val <0.05, "Significant", "Not significant")
+treatment_ci_df$Significant<-ifelse(is.na(treatment_ci_df$Significant), "Control", treatment_ci_df$Significant)
+
+treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+
+
+# plot all genera
+
+head(treatment_ci_df)
+
+treatment_ci_df<-treatment_ci_df[!is.na(treatment_ci_df$Est),]
+
+
+ggplot(treatment_ci_df, aes(y = Est, x = Treatment))+
+ 
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
+  facet_wrap(~Genus, nrow = 10, scales = "free_y")+
+   geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
+  theme_bw(base_size = 12)+
+  scale_color_manual(values = c("black", "darkgrey", "red"))+
+   geom_point(size = 2, aes(col = Significant))+
+  theme(legend.position = "bottom")
+
+
+  
+## plot only significant
+
+estimates_sig<- subset(treatment_ci_df,  Genus == "Comamonas" |  Genus == "Empedobacter" |  Genus == "Enterobacter" |  Genus == "Enterococcus" |   Genus == "Flavobacterium" |   Genus == "Kluyvera" |  Genus == "Lactococcus" | Genus == "Methylobacterium" | Genus == "Paenarthrobacter" |  Genus == "Pragia" |Genus == "Sphingobacterium" |  Genus == "Thermomonas")
+
+estimates_sig<-estimates_sig%>%arrange(Treatment, Genus)
+
+ggplot(estimates_sig, 
+       aes(y = Est, x = Treatment))+
+   geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
+  facet_wrap(~Genus, nrow = 2, scales = "free_y")+
+   geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
+  theme_bw(base_size = 12)+
+  scale_color_manual(values = c("black", "darkgrey", "red"))+
+   geom_point(size = 4, aes(col = Significant))+
+  theme(legend.position = "bottom")+
+  ylab("Estimate")
+
+estimates_sig$Genus<-factor(estimates_sig$Genus)
+unique(estimates_sig$Genus)
+
+estimates_sig$Effect_type <- rep(c("Additive", 
+                                   "Additive",
+                                   "Additive", 
+                                   "Dominant", #Enterococcus
+                                   "Additive",  #Flavo
+                                   "Post-metamorph'/Dominant", #Kluyvera
+                                   "Pre-metamorph'/Dominant", #Lactococcus
+                                   "Pre-metamorph'/Dominant", #Meth
+                                   "Post-metamorph'/Dominant", #Paenar
+                                   "Dominant", #Pragia
+                                   "Other",
+                                   "Post-metamorph'/Dominant"), 4)
+
+estimates_sig$Effect_type <-factor(estimates_sig$Effect_type , levels = c("Additive", "Dominant", "Post-metamorph'/Dominant", "Pre-metamorph'/Dominant", "Other"))
+
+ggplot(estimates_sig, 
+       aes(y = Est, x = Treatment))+
+   geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
+  facet_wrap(~Effect_type+Genus, nrow = 2, scales = "free_y")+
+   geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
+  theme_bw(base_size = 12)+
+  scale_color_manual(values = c("black", "darkgrey", "red"))+
+   geom_point(size = 4, aes(col = Significant))+
+  theme(legend.position = "bottom")+
+  ylab("Estimate")
+
+
+
+```
+
+## JSDM: ASV level
+```{r}
+##### ASV level ##########
+##### ASV level ##########
+
+frog_core<-core(frog_filtered, detection = 30, prevalence = 0.70)
+taxanames<-taxa_names(frog_core)
+
+sum(taxa_sums(frog_core))/sum(taxa_sums(frog_filtered))
+
+
+y <- data.frame(t(otu_table(frog_core)))
+X<-data.frame(sample_data(frog_core))
+
+
+X$Mass_scaled<-as.numeric(scale(X$Mass))
+X$Seq_depth_scaled<-as.numeric(scale(sqrt(X$Seq_depth)))
+
+X<-X[,c("Treatment","Sex", "Mass_scaled", "Seq_depth_scaled")]
+
+X$Treatment<-factor(X$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+```
+
+### Model comparison
+```{r eval = F}
+
+fit <- gllvm(y, X, 
+             num.lv = 2,
+            formula = ~ Treatment+  Sex +Seq_depth_scaled, 
+             family = "negative.binomial")
+
+#############
+
+fit1 <- gllvm(y, X, 
+             num.lv = 2,
+            formula = ~ Treatment+ Mass_scaled  +Seq_depth_scaled, 
+             family = "negative.binomial")
+
+###################
+
+fit2 <- gllvm(y, X, 
+             num.lv = 3,
+            formula = ~ Treatment+  Sex +Seq_depth_scaled, 
+             family = "negative.binomial")
+
+#############
+
+fit3 <- gllvm(y, X, 
+             num.lv = 3,
+            formula = ~ Treatment+ Mass_scaled  +Seq_depth_scaled, 
+             family = "negative.binomial")
+
+###################
+
+
+AIC(fit, fit1, fit2, fit3)
+
+```
+
+### Final model
+```{r}
+
+
+fit <- gllvm(y, X, 
+             num.lv = 3,
+            formula = ~ Treatment+ Sex  +Seq_depth_scaled, 
+             family = "negative.binomial")
+dev.off()
+
+coefplot(fit, cex.ylab = 0.7, which.Xcoef = c(1:4), mar = c(5,14,2,1))
+
+dev.off()
+
+```
+
+```{r}
+### extract estimates and CIs ###
+### extract estimates and CIs ###
+### extract estimates and CIs ###
+### extract estimates and CIs ###
+
+df<-coef(fit)
+est_df<-data.frame(df$Intercept)
+
+est_df2<-data.frame(df$Xcoef)[,1:3] # choose columns of interest
+
+
+est_df3<-merge(est_df, est_df2, by = 0)
+
+est_df3$CU_est<- est_df3$TreatmentCU+est_df3$df.Intercept
+est_df3$UC_est<- est_df3$TreatmentUC+est_df3$df.Intercept
+est_df3$CC_est<- est_df3$TreatmentCC+est_df3$df.Intercept
+est_df3<-est_df3[,c(1,2,6:8)] # change for zour data
+
+# order genera
+
+row.names(est_df3)<-est_df3$Row.names
+est_df3<-est_df3[gsub(' ', '.', taxa_names(frog_core)),] # order taxa
+
+
+############# extract confindence intervals  ####
+############# extract confindence intervals  ####
+############# extract confindence intervals  ####
+############# extract confindence intervals  ####
+
+
+confint_df<-data.frame(confint(fit))
+
+confint_df$row<- 1:nrow(confint_df)
+
+confint_df<-confint_df[205:472,] # manually choose rows that represent estimates for variable of interest
+confint_df$row<- 1:nrow(confint_df)
+
+
+# add a column with correct variable level
+
+
+confint_df$Treatment<-c(rep("UU", nrow(est_df)), rep("CU", nrow(est_df)), rep("UC", nrow(est_df)), rep("CC", nrow(est_df)))
+
+# column with taxa names. Should be automatically in the correct order but double check
+
+confint_df$ASV<-c(taxa_names(frog_core), taxa_names(frog_core), taxa_names(frog_core), taxa_names(frog_core))
+
+
+### extract standard errors #######
+### extract standard errors #######
+### extract standard errors #######
+### extract standard errors #######
+
+se_df<-se(fit)
+se1<-data.frame(se_df$sd$Xcoef)[,1:3] # select relevant columns
+se2<- data.frame(se_df$sd$beta0)
+se_df<-merge(se1, se2, by = 0)
+row.names(se_df)<-se_df$Row.names
+se_df<-se_df[gsub(' ', '.', taxa_names(frog_core)),]
+names(se_df)<-c("ASV", "CU", "UC", "CC", "UU")
+
+
+# now have estimates, confidence intervals, and standard errors as seperate data frames, but they are in different formats. Need to massage them into one dataframe for plotting.
+
+
+### get estimates and confidence intervals for UU (reference group)
+
+UU_ci<-subset(confint_df, Treatment == "UU")
+
+UU_df<- data.frame(est_df3$df.Intercept, UU_ci$X2.5.., UU_ci$X97.5.., UU_ci$ASV, se_df$UU)
+names(UU_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
+UU_df$Treatment <-"UU"
+
+# get estimates and CIs for CU. This needs extra lines to manually modify the CIs
+
+CU_ci<-subset(confint_df, Treatment == "CU")
+
+CU_df<- data.frame(est_df3$CU_est, est_df3$df.Intercept, CU_ci$X2.5.., CU_ci$X97.5.., CU_ci$ASV, se_df$CU)
+
+CU_df$CU_ci.X2.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X2.5..
+CU_df$CU_ci.X97.5..<-CU_df$est_df3.df.Intercept+ CU_df$CU_ci.X97.5..
+CU_df<-CU_df[,c(1,3:6)]
+
+names(CU_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
+CU_df$Treatment <-"CU"
+
+
+# get estimates and CIs for UC
+
+UC_ci<-subset(confint_df, Treatment == "UC")
+
+UC_df<- data.frame(est_df3$UC_est, est_df3$df.Intercept, UC_ci$X2.5.., UC_ci$X97.5.., UC_ci$ASV, se_df$UC)
+UC_df$UC_ci.X2.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X2.5..
+UC_df$UC_ci.X97.5..<-UC_df$est_df3.df.Intercept+ UC_df$UC_ci.X97.5..
+UC_df<-UC_df[,c(1,3:6)]
+names(UC_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
+UC_df$Treatment <-"UC"
+
+
+# get estimates and CIs for CC
+
+CC_ci<-subset(confint_df, Treatment == "CC")
+
+CC_df<- data.frame(est_df3$CC_est, est_df3$df.Intercept, CC_ci$X2.5.., CC_ci$X97.5.., CC_ci$ASV, se_df$CC)
+CC_df$CC_ci.X2.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X2.5..
+CC_df$CC_ci.X97.5..<-CC_df$est_df3.df.Intercept+ CC_df$CC_ci.X97.5..
+CC_df<-CC_df[,c(1,3:6)]
+names(CC_df)<-c("Est", "Lower_CI", "Upper_CI", "ASV", "SE")
+CC_df$Treatment <-"CC"
+
+
+treatment_ci_df<-rbind(UU_df, CU_df, UC_df, CC_df)
+treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+## get p values
+
+summary<-summary(fit)
+summary_df<-data.frame(summary$Coef.tableX)
+summary_df$row<-1:nrow(summary_df)
+
+summary_df<-summary_df[1:201,] # keep only treatment stats
+
+treatment_ci_df$P_val<-NA
+treatment_ci_df$Significant<-NA
+
+treatment_ci_df$P_val[68:268]<- summary_df$Pr...z..
+
+treatment_ci_df$Significant<-ifelse(treatment_ci_df$P_val <0.05, "Significant", "Not significant")
+treatment_ci_df$Significant<-ifelse(is.na(treatment_ci_df$Significant), "Control", treatment_ci_df$Significant)
+
+treatment_ci_df$Treatment<-factor(treatment_ci_df$Treatment, levels = c("UU", "CU", "UC", "CC"))
+
+
+# plot all genera
+ggplot(treatment_ci_df, aes(y = Est, x = Treatment))+
+  
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
+  facet_wrap(~ASV, scales = "free_y")+
+  geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
+  theme_bw(base_size = 12)+
+  scale_color_manual(values = c("black", "darkgrey", "red"))+
+  geom_point(size = 2, aes(col = Significant))+
+  theme(legend.position = "bottom")
+
+############
+############
+############
+
+sig_asvs<-unique((subset(treatment_ci_df, Significant == "Significant"))$ASV)
+
+
+treatment_ci_df$Keep<-treatment_ci_df$ASV %in% sig_asvs
+
+estimates_sig<-subset(treatment_ci_df, Keep == TRUE)
+
+ggplot(estimates_sig, aes(y = Est, x = Treatment))+
+  
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, col = "darkgrey", size = 1)+
+  facet_wrap(~ASV, scales = "free_y", ncol =4)+
+  geom_errorbar(aes(ymin = Est-SE, ymax = Est+SE), width = 0, col = "black", size = 1)+
+  theme_bw(base_size = 12)+
+  scale_color_manual(values = c("black", "darkgrey", "red"))+
+  geom_point(size = 3, aes(col = Significant))+
+  theme(legend.position = "bottom")
+
+```
+
+
+# BLAST
+
+```{r}
+
+
+unique(estimates_sig$ASV)
+
+head(taxtable_blast)
+subset(taxtable_blast, New_Taxa == "Sphingobacterium ASV 5491")
+subset(taxtable_blast, New_Taxa == "Sphingobacterium ASV 1137")
+subset(taxtable_blast, New_Taxa == "Lactococcus ASV 5310") # Lactococcus garvae
+subset(taxtable_blast, New_Taxa == "Enterococcus ASV 4482") # 	Enterococcus faecalis
+subset(taxtable_blast, New_Taxa == "Pseudomonas ASV 1915") # 	Pseudomonas alcaligenes?
+subset(taxtable_blast, New_Taxa == "Pseudomonas ASV 755") # 	
+subset(taxtable_blast, New_Taxa == "Pseudomonas ASV 1566") # 	Pseudomonas putida?
+subset(taxtable_blast, New_Taxa == "Methylobacterium ASV 886") # 	Pseudomonas putida?
+subset(taxtable_blast, New_Taxa == "Enterobacter ASV 1188") # 	Enterobacter cloacae
+subset(taxtable_blast, New_Taxa == "Aeromonas ASV 2598") # 	
+subset(taxtable_blast, New_Taxa == "Acinetobacter ASV 1521") # 	
+subset(taxtable_blast, New_Taxa == "Stenotrophomonas ASV 939") # 	
+subset(taxtable_blast, New_Taxa == "Aeromonas ASV 2598") # 	
+subset(taxtable_blast, New_Taxa == "Vagococcus ASV 2048") # 	Vegococcus fluvialis (LAB)
+subset(taxtable_blast, New_Taxa == "Flavobacterium ASV 3965") # 	
+
+```
